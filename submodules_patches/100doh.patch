@@ -1,0 +1,93 @@
+# Modifications to the 100DoH hand-object detector
+#   upstream: https://github.com/ddshan/hand_object_detector
+#   upstream licence: MIT (c) 2020 Dandan Shan
+# Modified by the HuRo authors, 2026. This diff is derived from the upstream above and
+# is governed by that licence -- NOT by the Apache-2.0 in ../LICENSE, which covers only
+# HuRo's own code. See ../THIRD_PARTY_NOTICES.md.
+
+diff --git a/lib/model/extension_layers/__init__.py b/lib/model/extension_layers/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/lib/model/csrc/cpu/ROIAlign_cpu.cpp b/lib/model/csrc/cpu/ROIAlign_cpu.cpp
+index d35aedf..cd9fde2 100755
+--- a/lib/model/csrc/cpu/ROIAlign_cpu.cpp
++++ b/lib/model/csrc/cpu/ROIAlign_cpu.cpp
+@@ -239,7 +239,7 @@ at::Tensor ROIAlign_forward_cpu(const at::Tensor& input,
+     return output;
+   }
+ 
+-  AT_DISPATCH_FLOATING_TYPES(input.type(), "ROIAlign_forward", [&] {
++  AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "ROIAlign_forward", [&] {
+     ROIAlignForward_cpu_kernel<scalar_t>(
+          output_size,
+          input.data<scalar_t>(),
+diff --git a/lib/model/csrc/cpu/nms_cpu.cpp b/lib/model/csrc/cpu/nms_cpu.cpp
+index 1153dea..639ca47 100755
+--- a/lib/model/csrc/cpu/nms_cpu.cpp
++++ b/lib/model/csrc/cpu/nms_cpu.cpp
+@@ -68,7 +68,7 @@ at::Tensor nms_cpu(const at::Tensor& dets,
+                const at::Tensor& scores,
+                const float threshold) {
+   at::Tensor result;
+-  AT_DISPATCH_FLOATING_TYPES(dets.type(), "nms", [&] {
++  AT_DISPATCH_FLOATING_TYPES(dets.scalar_type(), "nms", [&] {
+     result = nms_cpu_kernel<scalar_t>(dets, scores, threshold);
+   });
+   return result;
+diff --git a/lib/model/csrc/cuda/ROIAlign_cuda.cu b/lib/model/csrc/cuda/ROIAlign_cuda.cu
+index 2ad4100..db47b4c 100755
+--- a/lib/model/csrc/cuda/ROIAlign_cuda.cu
++++ b/lib/model/csrc/cuda/ROIAlign_cuda.cu
+@@ -285,7 +285,7 @@ at::Tensor ROIAlign_forward_cuda(const at::Tensor& input,
+     return output;
+   }
+ 
+-  AT_DISPATCH_FLOATING_TYPES(input.type(), "ROIAlign_forward", [&] {
++  AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "ROIAlign_forward", [&] {
+     RoIAlignForward<scalar_t><<<grid, block, 0, stream>>>(
+          output_size,
+          input.contiguous().data<scalar_t>(),
+@@ -331,7 +331,7 @@ at::Tensor ROIAlign_backward_cuda(const at::Tensor& grad,
+     return grad_input;
+   }
+ 
+-  AT_DISPATCH_FLOATING_TYPES(grad.type(), "ROIAlign_backward", [&] {
++  AT_DISPATCH_FLOATING_TYPES(grad.scalar_type(), "ROIAlign_backward", [&] {
+     RoIAlignBackwardFeature<scalar_t><<<grid, block, 0, stream>>>(
+          grad.numel(),
+          grad.contiguous().data<scalar_t>(),
+diff --git a/lib/model/csrc/cuda/ROIPool_cuda.cu b/lib/model/csrc/cuda/ROIPool_cuda.cu
+index fb5bf20..73ebf94 100755
+--- a/lib/model/csrc/cuda/ROIPool_cuda.cu
++++ b/lib/model/csrc/cuda/ROIPool_cuda.cu
+@@ -138,7 +138,7 @@ std::tuple<at::Tensor, at::Tensor> ROIPool_forward_cuda(const at::Tensor& input,
+     return std::make_tuple(output, argmax);
+   }
+ 
+-  AT_DISPATCH_FLOATING_TYPES(input.type(), "ROIPool_forward", [&] {
++  AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "ROIPool_forward", [&] {
+     RoIPoolFForward<scalar_t><<<grid, block, 0, stream>>>(
+          output_size,
+          input.contiguous().data<scalar_t>(),
+@@ -186,7 +186,7 @@ at::Tensor ROIPool_backward_cuda(const at::Tensor& grad,
+     return grad_input;
+   }
+ 
+-  AT_DISPATCH_FLOATING_TYPES(grad.type(), "ROIPool_backward", [&] {
++  AT_DISPATCH_FLOATING_TYPES(grad.scalar_type(), "ROIPool_backward", [&] {
+     RoIPoolFBackward<scalar_t><<<grid, block, 0, stream>>>(
+          grad.numel(),
+          grad.contiguous().data<scalar_t>(),
+diff --git a/lib/setup.py b/lib/setup.py
+index 7e7e200..c3bad01 100755
+--- a/lib/setup.py
++++ b/lib/setup.py
+@@ -28,7 +28,7 @@ def get_extensions():
+     extra_compile_args = {"cxx": []}
+     define_macros = []
+ 
+-    if torch.cuda.is_available() and CUDA_HOME is not None:
++    if (torch.cuda.is_available() or os.getenv("FORCE_CUDA", "") == "1") and CUDA_HOME is not None:
+         extension = CUDAExtension
+         sources += source_cuda
+         define_macros += [("WITH_CUDA", None)]

@@ -1,0 +1,33 @@
+[submodule "submodules/droidcalib"]
+	path = submodules/droidcalib
+	url = https://github.com/boschresearch/DroidCalib
+[submodule "submodules/anycalib"]
+	path = submodules/anycalib
+	url = https://github.com/javrtg/AnyCalib
+[submodule "submodules/100doh"]
+	path = submodules/100doh
+	url = https://github.com/ddshan/hand_object_detector
+[submodule "submodules/hawor"]
+	path = submodules/hawor
+	url = https://github.com/ThunderVVV/HaWoR
+[submodule "submodules/moge-2"]
+	path = submodules/moge-2
+	url = https://github.com/microsoft/MoGe
+[submodule "submodules/geocalib"]
+	path = submodules/geocalib
+	url = https://github.com/cvg/GeoCalib
+[submodule "submodules/detectron2"]
+	path = submodules/detectron2
+	url = https://github.com/facebookresearch/detectron2
+[submodule "submodules/sam2"]
+	path = submodules/sam2
+	url = https://github.com/facebookresearch/sam2
+[submodule "submodules/propainter"]
+	path = submodules/propainter
+	url = https://github.com/sczhou/ProPainter
+[submodule "submodules/pyroki"]
+	path = submodules/pyroki
+	url = https://github.com/chungmin99/pyroki.git
+[submodule "submodules/allex_model"]
+	path = submodules/allex_model
+	url = https://github.com/wirobotics-rih/allex_model.git

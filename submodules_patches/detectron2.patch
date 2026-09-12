@@ -1,0 +1,34 @@
+# Modifications to Detectron2
+#   upstream: https://github.com/facebookresearch/detectron2
+#   upstream licence: Apache-2.0
+# Modified by the HuRo authors, 2026. This diff is derived from the upstream above and
+# is governed by that licence -- NOT by the Apache-2.0 in ../LICENSE, which covers only
+# HuRo's own code. See ../THIRD_PARTY_NOTICES.md.
+
+diff --git a/detectron2/evaluation/rotated_coco_evaluation.py b/detectron2/evaluation/rotated_coco_evaluation.py
+index a6c53de..1b1d606 100644
+--- a/detectron2/evaluation/rotated_coco_evaluation.py
++++ b/detectron2/evaluation/rotated_coco_evaluation.py
+@@ -4,7 +4,8 @@ import json
+ import numpy as np
+ import os
+ import torch
+-from pycocotools.cocoeval import COCOeval, maskUtils
++from pycocotools.cocoeval import COCOeval
++from pycocotools import mask as maskUtils
+ 
+ from detectron2.structures import BoxMode, RotatedBoxes, pairwise_iou_rotated
+ from detectron2.utils.file_io import PathManager
+diff --git a/setup.py b/setup.py
+index b51307a..1ccbd3e 100644
+--- a/setup.py
++++ b/setup.py
+@@ -184,7 +184,7 @@ setup(
+         # NOTE: when updating fvcore/iopath version, make sure fvcore depends
+         # on compatible version of iopath.
+         "fvcore>=0.1.5,<0.1.6",  # required like this to make it pip installable
+-        "iopath>=0.1.7,<0.1.10",
++        "iopath>=0.1.7,<0.2.0",
+         "dataclasses; python_version<'3.7'",
+         "omegaconf>=2.1,<2.4",
+         "hydra-core>=1.1",

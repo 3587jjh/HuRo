@@ -1,0 +1,22 @@
+# Modifications to GeoCalib
+#   upstream: https://github.com/cvg/GeoCalib
+#   upstream licence: Apache-2.0
+# Modified by the HuRo authors, 2026. This diff is derived from the upstream above and
+# is governed by that licence -- NOT by the Apache-2.0 in ../LICENSE, which covers only
+# HuRo's own code. See ../THIRD_PARTY_NOTICES.md.
+
+diff --git a/geocalib/lm_optimizer.py b/geocalib/lm_optimizer.py
+index 2a2b2d5..89e4352 100644
+--- a/geocalib/lm_optimizer.py
++++ b/geocalib/lm_optimizer.py
+@@ -626,8 +626,8 @@ class LMOptimizer(nn.Module):
+ 
+             prev_cost = new_cost
+ 
+-            if i == self.num_steps - 1 and self.conf.early_stop:
+-                logger.warning("Reached maximum number of steps without convergence.")
++            #if i == self.num_steps - 1 and self.conf.early_stop:
++            #    logger.warning("Reached maximum number of steps without convergence.")
+ 
+         final_errors = self.calculate_residuals(camera_opt, gravity_opt, data)  # (B, N, 3)
+         final_cost, weights = self.calculate_costs(final_errors, data)  # (B, N)

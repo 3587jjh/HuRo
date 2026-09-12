@@ -1,0 +1,41 @@
+# weights / large binaries (submodule weights live in their own working trees;
+# the stage-7 Qwen3.5 VLM lives in the user's HF cache — neither is in this repo)
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+*.onnx
+# a custom robot's meshes; its URDF, under assets/ beside them, is small enough to track
+assets/*/meshes/
+# build artifacts
+build/
+*.so
+*.egg-info/
+*.egg
+dist/
+# python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+# env / editor
+.venv/
+.env
+.vscode/
+.idea/
+
+# Isaac-ready robot USD, imported from the vendor URDF on first render
+build/
+
+# pipeline outputs: every stage writes a sibling of its input clip directory, so a run over
+# examples/clips/ fills examples/ with these. The source clips themselves stay tracked.
+*_intr/
+*_contact/
+*_contact_refined/
+*_hand/
+*_extr/
+*_arm/
+*_chunked/
+*_lerobot/
+# single-clip runs (--input_dir <clip>.mp4) write these beside the clip instead
+examples/clips/intr/
+examples/clips/contact/

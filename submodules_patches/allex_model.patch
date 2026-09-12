@@ -1,0 +1,70 @@
+# Modifications to the ALLEX robot model
+#   upstream: https://github.com/wirobotics-rih/allex_model
+#   upstream licence: BSD-3-Clause (c) 2026 WIRobotics Inc.
+# Modified by the HuRo authors, 2026. This diff is derived from the upstream above and
+# is governed by that licence -- NOT by the Apache-2.0 in ../LICENSE, which covers only
+# HuRo's own code. See ../THIRD_PARTY_NOTICES.md.
+
+diff --git a/urdf/ALLEX.urdf b/urdf/ALLEX.urdf
+index 2ac3ecc..be828f0 100644
+--- a/urdf/ALLEX.urdf
++++ b/urdf/ALLEX.urdf
+@@ -2359,9 +2359,9 @@
+     <origin xyz="0.067225 0 0.0145" rpy="0 0 0" />
+   </joint>
+   <joint name="L_Palm_Link_fixed_joint" type="fixed">
+-    <parent link="L_Wrist_Pitch_Link" />
++    <parent link="L_Palm_Anchor" />
+     <child link="L_Palm_Link" />
+-    <origin xyz="0.0045 0 -0.095" rpy="0 0 0" />
++    <origin xyz="0.023841215 -0.008879797 -0.007836040" rpy="-0.043633197 0.000000096 0.026179975" />
+   </joint>
+   <joint name="L_Thumb_Fingertip_fixed_joint" type="fixed">
+     <parent link="L_Thumb_Distal_Link" />
+@@ -2389,9 +2389,9 @@
+     <origin xyz="0.0075 0 -0.011" rpy="0 0 0" />
+   </joint>
+   <joint name="R_Palm_Link_fixed_joint" type="fixed">
+-    <parent link="R_Wrist_Pitch_Link" />
++    <parent link="R_Palm_Anchor" />
+     <child link="R_Palm_Link" />
+-    <origin xyz="0.0045 0 -0.095" rpy="0 0 0" />
++    <origin xyz="0.023841215 0.008879797 -0.007836040" rpy="0.043633197 0.000000096 -0.026179975" />
+   </joint>
+   <joint name="R_Thumb_Fingertip_fixed_joint" type="fixed">
+     <parent link="R_Thumb_Distal_Link" />
+@@ -2448,4 +2448,34 @@
+     <child link="zed_left_camera_optical_frame" />
+     <origin xyz="0 0.032 0.013" rpy="-0 1.57079633 0" />
+   </joint>
++  <link name="L_Wrist_Pitch_Link_mano_convention" />
++  <joint name="L_Wrist_Pitch_Link_mano_convention_joint" type="fixed">
++    <parent link="L_Wrist_Pitch_Link" />
++    <child link="L_Wrist_Pitch_Link_mano_convention" />
++    <origin xyz="0 0 0" rpy="-1.57 1.57 0.0" />
++  </joint>
++  <link name="R_Wrist_Pitch_Link_mano_convention" />
++  <joint name="R_Wrist_Pitch_Link_mano_convention_joint" type="fixed">
++    <parent link="R_Wrist_Pitch_Link" />
++    <child link="R_Wrist_Pitch_Link_mano_convention" />
++    <origin xyz="0 0 0" rpy="1.57 -1.57 0.0" />
++  </joint>
++  <link name="zed_left_camera_optical_opencv" />
++  <joint name="zed_left_camera_optical_opencv_joint" type="fixed">
++    <parent link="zed_left_camera_optical_frame" />
++    <child link="zed_left_camera_optical_opencv" />
++    <origin xyz="0 0 0" rpy="0 0 -1.5707963267948966" />
++  </joint>
++  <link name="L_Palm_Anchor" />
++  <joint name="L_Palm_Anchor_joint" type="fixed">
++    <parent link="L_Wrist_Pitch_Link" />
++    <child link="L_Palm_Anchor" />
++    <origin xyz="-0.0191006 0.00915 -0.086757" rpy="0.043618266184708133 0.0011417270647287037 -0.0261550728993765" />
++  </joint>
++  <link name="R_Palm_Anchor" />
++  <joint name="R_Palm_Anchor_joint" type="fixed">
++    <parent link="R_Wrist_Pitch_Link" />
++    <child link="R_Palm_Anchor" />
++    <origin xyz="-0.0191006 -0.00915 -0.086757" rpy="-0.043618266184708133 0.0011417270647287037 0.0261550728993765" />
++  </joint>
+ </robot>

@@ -1,0 +1,544 @@
+# Modifications to HAWOR
+#   upstream: https://github.com/ThunderVVV/HaWoR
+#   upstream licence: CC BY-NC-ND 4.0
+# Modified by the HuRo authors, 2026. This diff is derived from the upstream above and
+# is governed by that licence -- NOT by the Apache-2.0 in ../LICENSE, which covers only
+# HuRo's own code. See ../THIRD_PARTY_NOTICES.md.
+
+diff --git a/demo.py b/demo.py
+index bf3382f..0b2d822 100644
+--- a/demo.py
++++ b/demo.py
+@@ -1,3 +1,4 @@
++# CUDA_VISIBLE_DEVICES=0 python demo.py --video_path ./example/00086.mp4 --img_focal 360
+ import argparse
+ import sys
+ import os
+@@ -12,7 +13,7 @@ from scripts.scripts_test_video.hawor_slam import hawor_slam
+ from hawor.utils.process import get_mano_faces, run_mano, run_mano_left
+ from lib.eval_utils.custom_utils import load_slam_cam
+ from lib.vis.run_vis2 import run_vis2_on_video, run_vis2_on_video_cam
+-
++from time import time
+ 
+ if __name__ == '__main__':
+     parser = argparse.ArgumentParser()
+@@ -24,17 +25,29 @@ if __name__ == '__main__':
+     parser.add_argument("--vis_mode",  type=str, default='world', help='cam | world')
+     args = parser.parse_args()
+ 
++    start_time = time()
+     start_idx, end_idx, seq_folder, imgfiles = detect_track_video(args)
++    end_time = time()
++    print('tracking:', end_time - start_time)
+ 
++    start_time = time()
+     frame_chunks_all, img_focal = hawor_motion_estimation(args, start_idx, end_idx, seq_folder)
++    end_time = time()
++    print('camera:', end_time - start_time)
+ 
++    start_time = time()
+     slam_path = os.path.join(seq_folder, f"SLAM/hawor_slam_w_scale_{start_idx}_{end_idx}.npz")
+     if not os.path.exists(slam_path):
+         hawor_slam(args, start_idx, end_idx)
+     slam_path = os.path.join(seq_folder, f"SLAM/hawor_slam_w_scale_{start_idx}_{end_idx}.npz")
+-    R_w2c_sla_all, t_w2c_sla_all, R_c2w_sla_all, t_c2w_sla_all = load_slam_cam(slam_path)
++    R_w2c_sla_all, t_w2c_sla_all, R_c2w_sla_all, t_c2w_sla_all = load_slam_cam(slam_path)    
++    end_time = time()
++    print('world:', end_time - start_time)
+ 
++    start_time = time()
+     pred_trans, pred_rot, pred_hand_pose, pred_betas, pred_valid = hawor_infiller(args, start_idx, end_idx, frame_chunks_all)
++    end_time = time()
++    print('infiller:', end_time - start_time)
+ 
+     # vis sequence for this video
+     hand2idx = {
+@@ -94,22 +107,19 @@ if __name__ == '__main__':
+     right_dict['vertices'] = torch.einsum('ij,btnj->btni', R_x, right_dict['vertices'].cpu())
+     
+     # Here we use aitviewer(https://github.com/eth-ait/aitviewer) for simple visualization.
+-    if args.vis_mode == 'world': 
+-        output_pth = os.path.join(seq_folder, f"vis_{vis_start}_{vis_end}")
+-        if not os.path.exists(output_pth):
+-            os.makedirs(output_pth)
+-        image_names = imgfiles[vis_start:vis_end]
+-        print(f"vis {vis_start} to {vis_end}")
+-        run_vis2_on_video(left_dict, right_dict, output_pth, img_focal, image_names, R_c2w=R_c2w_sla_all[vis_start:vis_end], t_c2w=t_c2w_sla_all[vis_start:vis_end])
+-    elif args.vis_mode == 'cam':
+-        output_pth = os.path.join(seq_folder, f"vis_{vis_start}_{vis_end}")
+-        if not os.path.exists(output_pth):
+-            os.makedirs(output_pth)
+-        image_names = imgfiles[vis_start:vis_end]
+-        print(f"vis {vis_start} to {vis_end}")
+-        run_vis2_on_video_cam(left_dict, right_dict, output_pth, img_focal, image_names, R_w2c=R_w2c_sla_all[vis_start:vis_end], t_w2c=t_w2c_sla_all[vis_start:vis_end])
+-
+-    print("finish")
+-
+-
++    # if args.vis_mode == 'world': 
++    #     output_pth = os.path.join(seq_folder, f"vis_{vis_start}_{vis_end}")
++    #     if not os.path.exists(output_pth):
++    #         os.makedirs(output_pth)
++    #     image_names = imgfiles[vis_start:vis_end]
++    #     print(f"vis {vis_start} to {vis_end}")
++    #     run_vis2_on_video(left_dict, right_dict, output_pth, img_focal, image_names, R_c2w=R_c2w_sla_all[vis_start:vis_end], t_c2w=t_c2w_sla_all[vis_start:vis_end])
++    # elif args.vis_mode == 'cam':
++    #     output_pth = os.path.join(seq_folder, f"vis_{vis_start}_{vis_end}")
++    #     if not os.path.exists(output_pth):
++    #         os.makedirs(output_pth)
++    #     image_names = imgfiles[vis_start:vis_end]
++    #     print(f"vis {vis_start} to {vis_end}")
++    #     run_vis2_on_video_cam(left_dict, right_dict, output_pth, img_focal, image_names, R_w2c=R_w2c_sla_all[vis_start:vis_end], t_w2c=t_w2c_sla_all[vis_start:vis_end])
+ 
++    # print("finish")
+diff --git a/hawor/utils/process.py b/hawor/utils/process.py
+index 89bfc33..c068ce4 100644
+--- a/hawor/utils/process.py
++++ b/hawor/utils/process.py
+@@ -4,6 +4,7 @@ from hawor.utils.geometry import aa_to_rotmat
+ import numpy as np
+ import sys
+ import os
++from pathlib import Path
+ 
+ def block_print():
+     sys.stdout = open(os.devnull, 'w')
+@@ -11,11 +12,29 @@ def block_print():
+ def enable_print():
+     sys.stdout = sys.__stdout__
+ 
++WRIST_CLOSURE_FACES = np.array([
++    [92, 38, 234],
++    [234, 38, 239],
++    [38, 122, 239],
++    [239, 122, 279],
++    [122, 118, 279],
++    [279, 118, 215],
++    [118, 117, 215],
++    [215, 117, 214],
++    [117, 119, 214],
++    [214, 119, 121],
++    [119, 120, 121],
++    [121, 120, 78],
++    [120, 108, 78],
++    [78, 108, 79],
++])
++
+ def get_mano_faces():
+     block_print()
++    base_dir = Path(__file__).resolve().parent.parent.parent
+     MANO_cfg = {
+-        'DATA_DIR': '_DATA/data/',
+-        'MODEL_PATH': '_DATA/data/mano',
++        'DATA_DIR': str(base_dir / '_DATA' / 'data'),
++        'MODEL_PATH': str(base_dir / '_DATA' / 'data' / 'mano'),
+         'GENDER': 'neutral',
+         'NUM_HAND_JOINTS': 15,
+         'CREATE_BODY_POSE': False
+@@ -25,6 +44,13 @@ def get_mano_faces():
+     enable_print()
+     return mano.faces
+ 
++def get_mano_faces_closed():
++    """Return (faces_right, faces_left) with wrist closure triangles."""
++    base_faces = get_mano_faces()
++    faces_right = np.concatenate([base_faces, WRIST_CLOSURE_FACES], axis=0)
++    faces_left = faces_right[:, [0, 2, 1]]  # flip winding order for left hand
++    return faces_right, faces_left
++
+ 
+ def run_mano(trans, root_orient, hand_pose, is_right=None, betas=None, use_cuda=True):
+     """
+@@ -37,13 +63,22 @@ def run_mano(trans, root_orient, hand_pose, is_right=None, betas=None, use_cuda=
+     betas : (optional) B x D
+     """
+     block_print()
++
++    base_dir = Path(__file__).resolve().parent.parent.parent
+     MANO_cfg = {
+-        'DATA_DIR': '_DATA/data/',
+-        'MODEL_PATH': '_DATA/data/mano',
++        'DATA_DIR': str(base_dir / '_DATA' / 'data'),
++        'MODEL_PATH': str(base_dir / '_DATA' / 'data' / 'mano'),
+         'GENDER': 'neutral',
+         'NUM_HAND_JOINTS': 15,
+-        'CREATE_BODY_POSE': False
++        'CREATE_BODY_POSE': False,
+     }
++    # MANO_cfg = {
++    #     'DATA_DIR': '_DATA/data/',
++    #     'MODEL_PATH': '_DATA/data/mano',
++    #     'GENDER': 'neutral',
++    #     'NUM_HAND_JOINTS': 15,
++    #     'CREATE_BODY_POSE': False
++    # }
+     mano_cfg = {k.lower(): v for k,v in MANO_cfg.items()}
+     mano = MANO(**mano_cfg)
+     if use_cuda:
+@@ -115,14 +150,23 @@ def run_mano_left(trans, root_orient, hand_pose, is_right=None, betas=None, use_
+     betas : (optional) B x D
+     """
+     block_print()
++    base_dir = Path(__file__).resolve().parent.parent.parent
+     MANO_cfg = {
+-        'DATA_DIR': '_DATA/data_left/',
+-        'MODEL_PATH': '_DATA/data_left/mano_left',
++        'DATA_DIR': str(base_dir / '_DATA' / 'data_left'),
++        'MODEL_PATH': str(base_dir / '_DATA' / 'data_left' / 'mano_left'),
+         'GENDER': 'neutral',
+         'NUM_HAND_JOINTS': 15,
+         'CREATE_BODY_POSE': False,
+         'is_rhand': False
+     }
++    # MANO_cfg = {
++    #     'DATA_DIR': '_DATA/data_left/',
++    #     'MODEL_PATH': '_DATA/data_left/mano_left',
++    #     'GENDER': 'neutral',
++    #     'NUM_HAND_JOINTS': 15,
++    #     'CREATE_BODY_POSE': False,
++    #     'is_rhand': False
++    # }
+     mano_cfg = {k.lower(): v for k,v in MANO_cfg.items()}
+     mano = MANO(**mano_cfg)
+     if use_cuda:
+diff --git a/lib/datasets/track_dataset.py b/lib/datasets/track_dataset.py
+index 076cf88..6122dae 100644
+--- a/lib/datasets/track_dataset.py
++++ b/lib/datasets/track_dataset.py
+@@ -76,3 +76,73 @@ class TrackDatasetEval(Dataset):
+ 
+         return item
+ 
++
++class TrackFramesEval(Dataset):
++    """
++    Track Dataset Class - imgfiles(str) 대신 frames(np.ndarray)를 받는 버전.
++    frames: list/array of (H, W, 3) BGR uint8
++    """
++
++    def __init__(self, frames, boxes,
++                 crop_size=256, dilate=1.0,
++                 img_focal=None, img_center=None, normalization=True,
++                 item_idx=0, do_flip=False):
++        super(TrackFramesEval, self).__init__()
++
++        self.frames = frames
++        self.crop_size = crop_size
++        self.normalization = normalization
++        self.normalize_img = Compose([
++            ToTensor(),
++            Normalize(mean=constants.IMG_NORM_MEAN, std=constants.IMG_NORM_STD)
++        ])
++
++        self.boxes = boxes
++        self.box_dilate = dilate
++        self.centers, self.scales = boxes_2_cs(boxes)
++
++        self.img_focal = img_focal
++        self.img_center = img_center
++        self.item_idx = item_idx
++        self.do_flip = do_flip
++
++    def __len__(self):
++        return len(self.frames)
++
++    def __getitem__(self, index):
++        item = {}
++        img = self.frames[index] # assumption: (H,W,3), BGR
++        img = img[:, :, ::-1]
++
++        scale = self.scales[index] * self.box_dilate
++        center = self.centers[index]
++
++        img_focal = self.img_focal
++        img_center = self.img_center
++
++        if self.do_flip:
++            img = img[:, ::-1, :]
++            img_width = img.shape[1]
++            center[0] = img_width - center[0] - 1
++
++        img_crop = crop(
++            img, center, scale,
++            [self.crop_size, self.crop_size],
++            rot=0
++        ).astype('uint8')
++
++        if self.normalization:
++            img_crop = self.normalize_img(img_crop)
++        else:
++            img_crop = torch.from_numpy(img_crop)
++        item['img'] = img_crop
++
++        if self.do_flip:
++            item['do_flip'] = torch.tensor(1).float()
++        item['img_idx'] = torch.tensor(index).long()
++        item['scale'] = torch.tensor(scale).float()
++        item['center'] = torch.tensor(center).float()
++        item['img_focal'] = torch.tensor(img_focal).float()
++        item['img_center'] = torch.tensor(img_center).float()
++
++        return item
+\ No newline at end of file
+diff --git a/lib/models/hawor.py b/lib/models/hawor.py
+index 34a081c..50adfb1 100644
+--- a/lib/models/hawor.py
++++ b/lib/models/hawor.py
+@@ -8,7 +8,7 @@ from torchvision.utils import make_grid
+ from tqdm import tqdm
+ from yacs.config import CfgNode
+ 
+-from lib.datasets.track_dataset import TrackDatasetEval
++from lib.datasets.track_dataset import TrackDatasetEval, TrackFramesEval #
+ from lib.models.modules import MANOTransformerDecoderHead, temporal_attention
+ from hawor.utils.pylogger import get_pylogger
+ from hawor.utils.render_openpose import render_openpose
+@@ -377,9 +377,33 @@ class HAWOR(pl.LightningModule):
+         return output
+ 
+     def inference(self, imgfiles, boxes, img_focal, img_center, device='cuda', do_flip=False):
+-        db = TrackDatasetEval(imgfiles, boxes, img_focal=img_focal, 
+-                        img_center=img_center, normalization=True, dilate=1.2, do_flip=do_flip)
+-
++        """
++        imgfiles:
++        - list/array of str  → TrackDatasetEval
++        - list/array of np.ndarray (H,W,3,BGR) → TrackFramesEval
++        """
++        boxes = np.asarray(boxes, dtype=np.float32)    
++        if isinstance(imgfiles[0], str):
++            db = TrackDatasetEval(
++                imgfiles,
++                boxes,
++                img_focal=img_focal,
++                img_center=img_center,
++                normalization=True,
++                dilate=1.2,
++                do_flip=do_flip,
++            )
++        else:
++            db = TrackFramesEval(
++                imgfiles,
++                boxes,
++                img_focal=img_focal,
++                img_center=img_center,
++                normalization=True,
++                dilate=1.2,
++                do_flip=do_flip,
++            )
++        
+         # Results
+         pred_cam = []
+         pred_pose = []
+@@ -389,7 +413,8 @@ class HAWOR(pl.LightningModule):
+ 
+         # To-do: efficient implementation with batch
+         items = []
+-        for i in tqdm(range(len(db))):
++        #for i in tqdm(range(len(db))):
++        for i in range(len(db)):
+             item = db[i]
+             items.append(item)
+ 
+diff --git a/lib/vis/run_vis2.py b/lib/vis/run_vis2.py
+index fc3893d..72bc34f 100644
+--- a/lib/vis/run_vis2.py
++++ b/lib/vis/run_vis2.py
+@@ -4,7 +4,7 @@ import numpy as np
+ import torch
+ import trimesh
+ 
+-import lib.vis.viewer as viewer_utils
++#import lib.vis.viewer as viewer_utils
+ from lib.vis.wham_tools.tools import checkerboard_geometry
+ 
+ def camera_marker_geometry(radius, height):
+diff --git a/scripts/scripts_test_video/hawor_video.py b/scripts/scripts_test_video/hawor_video.py
+index c7f2995..9908dd8 100644
+--- a/scripts/scripts_test_video/hawor_video.py
++++ b/scripts/scripts_test_video/hawor_video.py
+@@ -9,13 +9,14 @@ import cv2
+ from tqdm import tqdm
+ from glob import glob
+ from natsort import natsorted
++from typing import List, Optional, Tuple, Union
+ 
+ from lib.pipeline.tools import parse_chunks, parse_chunks_hand_frame
+ from lib.models.hawor import HAWOR
+ from lib.eval_utils.custom_utils import cam2world_convert, load_slam_cam
+ from lib.eval_utils.custom_utils import interpolate_bboxes
+ from lib.eval_utils.filling_utils import filling_postprocess, filling_preprocess
+-from lib.vis.renderer import Renderer
++#from lib.vis.renderer import Renderer
+ from hawor.utils.process import get_mano_faces, run_mano, run_mano_left
+ from hawor.utils.rotation import angle_axis_to_rotation_matrix, rotation_matrix_to_angle_axis
+ from infiller.lib.model.network import TransformerModel
+@@ -26,18 +27,24 @@ def load_hawor(checkpoint_path):
+     model_cfg = str(Path(checkpoint_path).parent.parent / 'model_config.yaml')
+     model_cfg = get_config(model_cfg, update_cachedir=True)
+ 
++    model_cfg.defrost()
++    base_dir = str(Path(checkpoint_path).parent.parent.parent.parent)
++    model_cfg.MANO.DATA_DIR = base_dir + '/' + model_cfg.MANO.DATA_DIR
++    model_cfg.MANO.MODEL_PATH = base_dir + '/' + model_cfg.MANO.MODEL_PATH
++    model_cfg.MANO.MEAN_PARAMS = base_dir + '/' + model_cfg.MANO.MEAN_PARAMS
++
+     # Override some config values, to crop bbox correctly
+     if (model_cfg.MODEL.BACKBONE.TYPE == 'vit') and ('BBOX_SHAPE' not in model_cfg.MODEL):
+-        model_cfg.defrost()
+         assert model_cfg.MODEL.IMAGE_SIZE == 256, f"MODEL.IMAGE_SIZE ({model_cfg.MODEL.IMAGE_SIZE}) should be 256 for ViT backbone"
+         model_cfg.MODEL.BBOX_SHAPE = [192,256]
+-        model_cfg.freeze()
++    model_cfg.freeze()
+ 
+-    model = HAWOR.load_from_checkpoint(checkpoint_path, strict=False, cfg=model_cfg)
++    # hawor.ckpt pickles omegaconf config objects, which torch>=2.6 refuses under its
++    # weights_only=True default; the checkpoint is a trusted local file
++    model = HAWOR.load_from_checkpoint(checkpoint_path, strict=False, cfg=model_cfg, weights_only=False)
+     return model, model_cfg
+ 
+ 
+-
+ def hawor_motion_estimation(args, start_idx, end_idx, seq_folder):
+     model, model_cfg = load_hawor(args.checkpoint)
+     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+@@ -364,4 +371,52 @@ def hawor_infiller(args, start_idx, end_idx, frame_chunks_all):
+     joblib.dump([pred_trans, pred_rot, pred_hand_pose, pred_betas, pred_valid], save_path)
+     return pred_trans, pred_rot, pred_hand_pose, pred_betas, pred_valid
+ 
+-    
+\ No newline at end of file
++
++def estimate_3d_hand_keypoints(
++    model, # hawor model
++    frames: List[np.ndarray],
++    bboxes: List[np.ndarray],
++    hand_side: int, # 0 (left), 1 (right)
++    img_focal: float,
++) -> np.ndarray:
++
++    assert len(frames) == len(bboxes) and len(frames) > 0
++    T = len(frames)
++    h0, w0 = frames[0].shape[:2]
++    img_center = [w0 / 2.0, h0 / 2.0]
++    frame_idx = np.arange(T)
++    assert hand_side in (0,1)
++ 
++    do_flip = (hand_side == 0)
++    with torch.inference_mode():
++        # results["pred_rotmat"]: (T, 16, 3, 3)  (root + 15 joints)
++        # results["pred_trans"]:  (T, 1, 3)
++        # results["pred_shape"]:  (T, 10)
++        results = model.inference(
++            frames,
++            bboxes,
++            img_focal=img_focal,
++            img_center=img_center,
++            do_flip=do_flip
++        )
++    rotmat_all = results["pred_rotmat"][None, ...]  # (1, T, 16, 3, 3)
++    root_rotmat = rotmat_all[:, :, 0]
++    hand_rotmat = rotmat_all[:, :, 1:]
++    root_aa = rotation_matrix_to_angle_axis(root_rotmat)
++    hand_aa = rotation_matrix_to_angle_axis(hand_rotmat)
++
++    if do_flip:
++        root_aa[..., 1] *= -1
++        root_aa[..., 2] *= -1
++        hand_aa[..., 1] *= -1
++        hand_aa[..., 2] *= -1
++
++    trans = results["pred_trans"][None, :, 0]
++    betas = results["pred_shape"][None, ...]
++    if do_flip: mano_out = run_mano_left(trans, root_aa, hand_aa, betas=betas) # left
++    else: mano_out = run_mano(trans, root_aa, hand_aa, betas=betas) # right
++    joints = mano_out["joints"][0].cpu().numpy()  # (T, 21, 3)
++    vertices = mano_out["vertices"][0].cpu().numpy()  # (T, 778, 3)
++    wrist_rot_aa = root_aa[0].cpu().numpy().astype(np.float32)    # (T, 3)
++    finger_rot_aa = hand_aa[0].cpu().numpy().astype(np.float32)  # (T, 15, 3)
++    return joints, vertices, wrist_rot_aa, finger_rot_aa # camera coordinate
+\ No newline at end of file
+diff --git a/thirdparty/DROID-SLAM/droid_slam/depth_video.py b/thirdparty/DROID-SLAM/droid_slam/depth_video.py
+index a23e262..1be5a2c 100644
+--- a/thirdparty/DROID-SLAM/droid_slam/depth_video.py
++++ b/thirdparty/DROID-SLAM/droid_slam/depth_video.py
+@@ -166,16 +166,16 @@ class DepthVideo:
+             poses = self.poses[:self.counter.value].clone()
+ 
+             d1 = droid_backends.frame_distance(
+-                poses, self.disps, self.intrinsics[0], ii, jj, beta)
++                poses, self.disps, self.intrinsics[0], ii, jj, beta, 0)
+ 
+             d2 = droid_backends.frame_distance(
+-                poses, self.disps, self.intrinsics[0], jj, ii, beta)
++                poses, self.disps, self.intrinsics[0], jj, ii, beta, 0)
+ 
+             d = .5 * (d1 + d2)
+ 
+         else:
+             d = droid_backends.frame_distance(
+-                self.poses, self.disps, self.intrinsics[0], ii, jj, beta)
++                self.poses, self.disps, self.intrinsics[0], ii, jj, beta, 0)
+ 
+         if return_matrix:
+             return d.reshape(N, N)
+@@ -192,6 +192,6 @@ class DepthVideo:
+                 t1 = max(ii.max().item(), jj.max().item()) + 1
+ 
+             droid_backends.ba(self.poses, self.disps, self.intrinsics[0], self.disps_sens,
+-                target, weight, eta, ii, jj, t0, t1, itrs, lm, ep, motion_only)
++                target, weight, eta, ii, jj, t0, t1, itrs, 0, lm, ep, motion_only, False)
+ 
+             self.disps.clamp_(min=0.001)
+diff --git a/thirdparty/DROID-SLAM/droid_slam/factor_graph.py b/thirdparty/DROID-SLAM/droid_slam/factor_graph.py
+index af7e7c5..cc9af0d 100644
+--- a/thirdparty/DROID-SLAM/droid_slam/factor_graph.py
++++ b/thirdparty/DROID-SLAM/droid_slam/factor_graph.py
+@@ -271,7 +271,7 @@ class FactorGraph:
+         num, rig, ch, ht, wd = self.video.fmaps.shape
+         corr_op = AltCorrBlock(self.video.fmaps.view(1, num*rig, ch, ht, wd))
+ 
+-        print("Global BA Iteration with {} steps".format(steps))
++        # print("Global BA Iteration with {} steps".format(steps))
+         for step in range(steps):
+             # print("Global BA Iteration #{}".format(step+1))
+             with torch.cuda.amp.autocast(enabled=False):
+diff --git a/thirdparty/DROID-SLAM/droid_slam/vis_headless.py b/thirdparty/DROID-SLAM/droid_slam/vis_headless.py
+index 4595470..69717c0 100644
+--- a/thirdparty/DROID-SLAM/droid_slam/vis_headless.py
++++ b/thirdparty/DROID-SLAM/droid_slam/vis_headless.py
+@@ -107,12 +107,12 @@ def droid_visualization(video, save_path, device="cuda:0"):
+ 
+             images = torch.index_select(video.images, 0, dirty_index)
+             images = images.cpu()[:,[2,1,0],3::8,3::8].permute(0,2,3,1) / 255.0
+-            points = droid_backends.iproj(SE3(poses).inv().data, disps, video.intrinsics[0]).cpu()
++            points = droid_backends.iproj(SE3(poses).inv().data, disps, video.intrinsics[0], 0).cpu()
+ 
+             thresh = droid_visualization.filter_thresh * torch.ones_like(disps.mean(dim=[1,2]))
+             
+             count = droid_backends.depth_filter(
+-                video.poses, video.disps, video.intrinsics[0], dirty_index, thresh)
++                video.poses, video.disps, video.intrinsics[0], dirty_index, thresh, 0)
+             
+             count = count.cpu()
+             disps = disps.cpu()
+diff --git a/thirdparty/DROID-SLAM/droid_slam/visualization.py b/thirdparty/DROID-SLAM/droid_slam/visualization.py
+index 208ad32..af5bdaf 100644
+--- a/thirdparty/DROID-SLAM/droid_slam/visualization.py
++++ b/thirdparty/DROID-SLAM/droid_slam/visualization.py
+@@ -130,12 +130,12 @@ def droid_visualization(video, device="cuda:0"):
+ 
+             images = torch.index_select(video.images, 0, dirty_index)
+             images = images.cpu()[:,[2,1,0],3::8,3::8].permute(0,2,3,1) / 255.0
+-            points = droid_backends.iproj(SE3(poses).inv().data, disps, video.intrinsics[0]).cpu()
++            points = droid_backends.iproj(SE3(poses).inv().data, disps, video.intrinsics[0], 0).cpu()
+ 
+             thresh = droid_visualization.filter_thresh * torch.ones_like(disps.mean(dim=[1,2]))
+             
+             count = droid_backends.depth_filter(
+-                video.poses, video.disps, video.intrinsics[0], dirty_index, thresh)
++                video.poses, video.disps, video.intrinsics[0], dirty_index, thresh, 0)
+ 
+             count = count.cpu()
+             disps = disps.cpu()

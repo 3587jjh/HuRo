@@ -1,0 +1,187 @@
+# Allex retargeting config: how the pipeline drives the Allex URDF.
+# Names are the URDF's own, except frames added by submodules_patches/allex_model.patch.
+name: allex
+robot_urdf_path: submodules/allex_model/urdf/ALLEX.urdf
+
+# Joint groups: order defines the state_qpos layout. Unlisted URDF joints stay locked at home.
+joints:
+  left_arm:
+    - L_Shoulder_Pitch_Joint
+    - L_Shoulder_Roll_Joint
+    - L_Shoulder_Yaw_Joint
+    - L_Elbow_Joint
+    - L_Wrist_Yaw_Joint
+    - L_Wrist_Roll_Joint
+    - L_Wrist_Pitch_Joint
+  right_arm:
+    - R_Shoulder_Pitch_Joint
+    - R_Shoulder_Roll_Joint
+    - R_Shoulder_Yaw_Joint
+    - R_Elbow_Joint
+    - R_Wrist_Yaw_Joint
+    - R_Wrist_Roll_Joint
+    - R_Wrist_Pitch_Joint
+  left_hand:
+    - L_Thumb_Yaw_Joint
+    - L_Thumb_CMC_Joint
+    - L_Thumb_MCP_Joint
+    - L_Index_ABAD_Joint
+    - L_Index_MCP_Joint
+    - L_Index_PIP_Joint
+    - L_Middle_ABAD_Joint
+    - L_Middle_MCP_Joint
+    - L_Middle_PIP_Joint
+    - L_Ring_ABAD_Joint
+    - L_Ring_MCP_Joint
+    - L_Ring_PIP_Joint
+    - L_Little_ABAD_Joint
+    - L_Little_MCP_Joint
+    - L_Little_PIP_Joint
+  right_hand:
+    - R_Thumb_Yaw_Joint
+    - R_Thumb_CMC_Joint
+    - R_Thumb_MCP_Joint
+    - R_Index_ABAD_Joint
+    - R_Index_MCP_Joint
+    - R_Index_PIP_Joint
+    - R_Middle_ABAD_Joint
+    - R_Middle_MCP_Joint
+    - R_Middle_PIP_Joint
+    - R_Ring_ABAD_Joint
+    - R_Ring_MCP_Joint
+    - R_Ring_PIP_Joint
+    - R_Little_ABAD_Joint
+    - R_Little_MCP_Joint
+    - R_Little_PIP_Joint
+  waist:
+    - Waist_Yaw_Joint
+    - Waist_Lower_Pitch_Joint
+  neck:
+    - Neck_Pitch_Joint
+    - Neck_Yaw_Joint
+
+# Role-based weight assignment: hands get scaled smoothness/rest, waist+neck stay stiff.
+hand_groups: [left_hand, right_hand]
+stiff_groups: [waist, neck]
+
+# Keypoint mapping: MediaPipe index -> the link that starts at that joint. A link sits at
+# the joint that moves it, so the index PIP is L_Index_Middle_Link. DIP joints mimic PIP
+# and are skipped.
+keypoint_mapping:
+  left:
+    0:  L_Palm_Anchor                 # wrist
+    1:  L_Thumb_Proximal_Link         # thumb CMC
+    2:  L_Thumb_Middle_Link           # thumb MCP
+    3:  L_Thumb_Distal_Link           # thumb IP
+    4:  L_Thumb_Fingertip             # thumb tip
+    5:  L_Index_Roll_Link             # index MCP
+    6:  L_Index_Middle_Link           # index PIP
+    8:  L_Index_Fingertip             # index tip
+    9:  L_Middle_Roll_Link            # middle MCP
+    10: L_Middle_Middle_Link          # middle PIP
+    12: L_Middle_Fingertip            # middle tip
+    13: L_Ring_Roll_Link              # ring MCP
+    14: L_Ring_Middle_Link            # ring PIP
+    16: L_Ring_Fingertip              # ring tip
+    17: L_Little_Roll_Link            # pinky MCP
+    18: L_Little_Middle_Link          # pinky PIP
+    20: L_Little_Fingertip            # pinky tip
+  right:
+    0:  R_Palm_Anchor                 # wrist
+    1:  R_Thumb_Proximal_Link         # thumb CMC
+    2:  R_Thumb_Middle_Link           # thumb MCP
+    3:  R_Thumb_Distal_Link           # thumb IP
+    4:  R_Thumb_Fingertip             # thumb tip
+    5:  R_Index_Roll_Link             # index MCP
+    6:  R_Index_Middle_Link           # index PIP
+    8:  R_Index_Fingertip             # index tip
+    9:  R_Middle_Roll_Link            # middle MCP
+    10: R_Middle_Middle_Link          # middle PIP
+    12: R_Middle_Fingertip            # middle tip
+    13: R_Ring_Roll_Link              # ring MCP
+    14: R_Ring_Middle_Link            # ring PIP
+    16: R_Ring_Fingertip              # ring tip
+    17: R_Little_Roll_Link            # pinky MCP
+    18: R_Little_Middle_Link          # pinky PIP
+    20: R_Little_Fingertip            # pinky tip
+
+# Camera link the ego-view cost aligns to (OpenCV convention, patch-added frame)
+camera_link: zed_left_camera_optical_opencv
+
+# EEF wrist links (mano convention, patch-added frames)
+eef_link_names:
+  left: L_Wrist_Pitch_Link_mano_convention
+  right: R_Wrist_Pitch_Link_mano_convention
+
+# Joint group supplying each side's EEF hand joints
+eef_hand_joint_groups:
+  left: left_hand
+  right: right_hand
+
+# Home configuration (joint_name: radians). Unlisted joints are 0.0.
+home_config:
+  L_Shoulder_Roll_Joint: 0.15
+  R_Shoulder_Roll_Joint: -0.15
+  L_Elbow_Joint: -1.57
+  R_Elbow_Joint: -1.57
+  L_Wrist_Yaw_Joint: -1.7
+  R_Wrist_Yaw_Joint: 1.7
+
+# Overlay rendering (stage 10, Isaac Sim)
+overlay:
+  # Mimic joints must be driven explicitly under PhysX. The multipliers are the URDF's own.
+  mimic_joints:
+    Waist_Pitch_Dummy_Joint:
+      parent: Waist_Lower_Pitch_Joint
+      multiplier: 1.0
+    Waist_Upper_Pitch_Joint:
+      parent: Waist_Lower_Pitch_Joint
+      multiplier: -1.0
+    L_Thumb_IP_Joint:
+      parent: L_Thumb_MCP_Joint
+      multiplier: 0.731884995
+    L_Index_DIP_Joint:
+      parent: L_Index_PIP_Joint
+      multiplier: 0.656296489
+    L_Middle_DIP_Joint:
+      parent: L_Middle_PIP_Joint
+      multiplier: 0.656296489
+    L_Ring_DIP_Joint:
+      parent: L_Ring_PIP_Joint
+      multiplier: 0.656296489
+    L_Little_DIP_Joint:
+      parent: L_Little_PIP_Joint
+      multiplier: 0.656296489
+    R_Thumb_IP_Joint:
+      parent: R_Thumb_MCP_Joint
+      multiplier: 0.731884995
+    R_Index_DIP_Joint:
+      parent: R_Index_PIP_Joint
+      multiplier: 0.656296489
+    R_Middle_DIP_Joint:
+      parent: R_Middle_PIP_Joint
+      multiplier: 0.656296489
+    R_Ring_DIP_Joint:
+      parent: R_Ring_PIP_Joint
+      multiplier: 0.656296489
+    R_Little_DIP_Joint:
+      parent: R_Little_PIP_Joint
+      multiplier: 0.656296489
+
+  # Non-arm links whose OWN geometry is hidden (link prims are nested, so hiding a whole prim would hide the arms too)
+  hide_link_names:
+    - Base_Link
+    - Waist_Yaw_Link
+    - Waist_Pitch_Back_Link
+    - Waist_Lower_Pitch_Link
+    - Waist_Upper_Pitch_Link
+    - Chest_Origin_Link
+    - Neck_Pitch_Link
+    - Neck_Yaw_Link
+    - realsense_link
+    - orbbec_link
+    - zed_camera_link
+    - L_Shoulder_Pitch_Link
+    - L_Shoulder_RollYaw_Link
+    - R_Shoulder_Pitch_Link
+    - R_Shoulder_RollYaw_Link

@@ -1,0 +1,22 @@
+# Keep the image weight-free (weights are downloaded/mounted at runtime) and the build
+# context lean. .git stays IN the context: the patch step runs `git apply` inside the
+# submodules, whose .git pointers resolve into the superproject's .git/modules.
+build/
+**/__pycache__/
+*.log
+
+# model weights / checkpoints (never baked into the image)
+submodules/*/checkpoints/
+submodules/hawor/weights/
+submodules/hawor/_DATA/
+submodules/propainter/weights/
+submodules/100doh/*.pth
+submodules/anycalib/*.pt
+
+# Robot geometry. The build needs only the URDF (allex_model.patch touches it). The meshes
+# are read at render time from the mounted checkout. The ALLEX STLs are licensed for
+# evaluation only, and `COPY . .` is its own layer, so anything landing there survives a
+# later `rm -rf`.
+assets/*/meshes/
+submodules/allex_model/meshes/
+submodules/allex_model/usd/

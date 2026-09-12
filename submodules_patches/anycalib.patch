@@ -1,0 +1,360 @@
+# Modifications to AnyCalib
+#   upstream: https://github.com/javrtg/AnyCalib
+#   upstream licence: Apache-2.0
+# Modified by the HuRo authors, 2026. This diff is derived from the upstream above and
+# is governed by that licence -- NOT by the Apache-2.0 in ../LICENSE, which covers only
+# HuRo's own code. See ../THIRD_PARTY_NOTICES.md.
+
+diff --git a/anycalib/cameras/base.py b/anycalib/cameras/base.py
+index 523449b..eaa97e1 100644
+--- a/anycalib/cameras/base.py
++++ b/anycalib/cameras/base.py
+@@ -438,7 +438,7 @@ class BaseCamera(ABC):
+         scale: float = 1.0,
+         target_proj: str = "perspective",
+         outside_value: float = 1.0,
+-        add_alpha: bool = False,
++        interp_mode: str = "bilinear",
+     ) -> Tensor:
+         """Undistort an image using the distortion model.
+ 
+@@ -457,12 +457,11 @@ class BaseCamera(ABC):
+                 the method `ideal_unprojection`.
+             outside_value: value to use for pixels outside the image bounds after
+                 undistortion.
+-            add_alpha: If True, append a binary alpha channel indicating whether each
+-                undistorted pixel samples from inside the original image.
++            interp_mode: interpolation mode for the grid sample operation. Default is
++                "bilinear". Other options are "nearest" and "bicubic".
+ 
+         Returns:
+-            (B, 3, H, W) or (3, H, W) undistorted image, or with an additional alpha
+-                channel if `add_alpha=True`.
++            (B, 3, H, W) or (3, H, W) undistorted image.
+         """
+         assert im.ndim in (3, 4), f"Expected 3 or 4 input dimensions, got {im.ndim=}."
+         is_batched = im.ndim == 4
+@@ -492,19 +491,12 @@ class BaseCamera(ABC):
+         map_xy = 2 * map_xy.reshape(b, h, w, 2) / map_xy.new_tensor((w, h)) - 1
+         # undistort
+         im_undist = outside_value + torch.nn.functional.grid_sample(
+-            im - outside_value, map_xy, align_corners=False, padding_mode="zeros"
++            im - outside_value,
++            map_xy,
++            mode=interp_mode,
++            padding_mode="zeros",
++            align_corners=False,
+         )
+-
+-        if add_alpha:
+-            alpha = 0.99 < torch.nn.functional.grid_sample(
+-                im.new_ones((b, 1, h, w)),
+-                map_xy,
+-                mode="bilinear",
+-                align_corners=False,
+-                padding_mode="zeros",
+-            )
+-            im_undist = torch.cat((im_undist, alpha.to(im_undist.dtype)), dim=1)
+-
+         if not is_batched:
+             im_undist = im_undist[0]
+         return im_undist
+diff --git a/anycalib/cameras/eucm.py b/anycalib/cameras/eucm.py
+index f4bf13f..889d62e 100644
+--- a/anycalib/cameras/eucm.py
++++ b/anycalib/cameras/eucm.py
+@@ -83,7 +83,7 @@ class EUCM(BaseCamera):
+ 
+     @classmethod
+     def create_from_id(cls, id_) -> BaseCamera:
+-        assert id_ == cls.NAME, f"Expected id='{cls.NAME}', but got: {id_}."
++        assert id_ == "eucm", f"Expected id='eucm', but got: {id_}."
+         return cls()
+ 
+     @property
+@@ -96,7 +96,7 @@ class EUCM(BaseCamera):
+             total = num_f + 4
+             params_str = (
+                 "fx, fy" if self.NUM_F == 2 else "f"
+-            ) + ", cx, cy, \u03b1, \u03b2"
++            ) + ", cx, cy, \u03B1, \u03B2"
+             raise ValueError(
+                 f"Expected (..., {total}) parameters as input, representing (...) "
+                 f"cameras and {total} intrinsic params per cameras: {params_str}, i.e. "
+@@ -128,9 +128,7 @@ class EUCM(BaseCamera):
+         xy = points_3d[..., :2]
+         z = points_3d[..., 2:]
+         d = torch.sqrt(
+-            (params[..., None, -1:] * (xy**2).sum(dim=-1, keepdim=True) + z**2).clamp(
+-                eps
+-            )  # fmt: skip
++            (params[..., None, -1:] * (xy**2).sum(dim=-1, keepdim=True) + z**2).clamp(eps)  # fmt: skip
+         )
+         alpha = params[..., None, -2:-1]  # (..., 1, 1)
+         im_coords = (
+diff --git a/anycalib/model/anycalib_pretrained.py b/anycalib/model/anycalib_pretrained.py
+index 82ef6cd..fba540e 100644
+--- a/anycalib/model/anycalib_pretrained.py
++++ b/anycalib/model/anycalib_pretrained.py
+@@ -158,12 +158,13 @@ class Calibrator:
+             )
+             success_ = success_ and cost < cost0
+             intrinsics_icovs.append(intrins_icovs_)
+-            if cost > cost0:
+-                print(
+-                    f"WARNING: Worse cost after optimization: {cost:.2e} > {cost0:.2e}"
+-                )
+-            else:
+-                intrinsics_ = intrinsics_opt
++            # if cost > cost0:
++            #     print(
++            #         f"WARNING: Worse cost after optimization: {cost:.2e} > {cost0:.2e}"
++            #     )
++            # else:
++            #     intrinsics_ = intrinsics_opt
++            if cost <= cost0: intrinsics_ = intrinsics_opt
+ 
+             intrinsics.append(intrinsics_)
+             success.append(success_)
+@@ -227,6 +228,7 @@ class AnyCalib(torch.nn.Module):
+         ransac_conf: dict | None = None,
+         rm_borders: int = 0,
+         sample_size: int = -1,
++        local_path=None
+     ):
+         super().__init__()
+ 
+@@ -251,12 +253,14 @@ class AnyCalib(torch.nn.Module):
+                         self.AVAILABLE_MODELS
+                     )
+                 )
+-
+-            url = f"https://github.com/javrtg/AnyCalib/releases/download/v1.0.0/{model_id}.pt"
+-            model_dir = f"{torch.hub.get_dir()}/anycalib"
+-            state_dict = torch.hub.load_state_dict_from_url(
+-                url, model_dir, map_location="cpu", file_name=f"{model_id}.pt"
+-            )
++            if os.path.exists(local_path):
++                state_dict = torch.load(local_path, map_location="cpu")
++            else:
++                model_dir = f"{torch.hub.get_dir()}/anycalib"
++                url = f"https://github.com/javrtg/AnyCalib/releases/download/v1.0.0/{model_id}.pt"
++                state_dict = torch.hub.load_state_dict_from_url(
++                    url, model_dir, map_location="cpu", file_name=f"{model_id}.pt"
++                )
+             self.load_state_dict(state_dict, strict=True)
+             self.eval()
+ 
+diff --git a/siclib/datasets/augmentations.py b/siclib/datasets/augmentations.py
+index 5a21ea6..60533cb 100644
+--- a/siclib/datasets/augmentations.py
++++ b/siclib/datasets/augmentations.py
+@@ -1,5 +1,3 @@
+-import inspect
+-from math import sqrt
+ from typing import Union
+ 
+ import albumentations as A
+@@ -20,18 +18,6 @@ class IdentityTransform(A.ImageOnlyTransform):
+         return ()
+ 
+ 
+-def _gauss_noise_transform():
+-    if "std_range" in inspect.signature(A.GaussNoise.__init__).parameters:
+-        return A.GaussNoise(
+-            std_range=(sqrt(5) / 255, sqrt(112) / 255),
+-            mean_range=(0.0, 0.0),
+-            per_channel=True,
+-            p=0.75,
+-        )
+-    else:
+-        return A.GaussNoise(var_limit=(5.0, 112.0), mean=0, per_channel=True, p=0.75)
+-
+-
+ class RandomAdditiveShade(A.ImageOnlyTransform):
+     def __init__(
+         self,
+@@ -54,9 +40,7 @@ class RandomAdditiveShade(A.ImageOnlyTransform):
+             shaded = self._py_additive_shade(img.astype(np.float32))
+             shaded = shaded.astype(np.uint8)
+         else:
+-            raise NotImplementedError(
+-                f"Data augmentation not available for type: {img.dtype}"
+-            )
++            raise NotImplementedError(f"Data augmentation not available for type: {img.dtype}")
+         return shaded
+ 
+     def _py_additive_shade(self, img):
+@@ -206,9 +190,7 @@ class DarkAugmentation(BaseAugmentation):
+             A.OneOf(
+                 [
+                     A.Blur(**kwi(blur, p=0.1, blur_limit=(3, 9), n="blur")),
+-                    A.MotionBlur(
+-                        **kwi(blur, p=0.2, blur_limit=(3, 25), n="motion_blur")
+-                    ),
++                    A.MotionBlur(**kwi(blur, p=0.2, blur_limit=(3, 25), n="motion_blur")),
+                     A.ISONoise(),
+                     A.ImageCompression(),
+                 ],
+@@ -274,19 +256,15 @@ class DeepCalibAugmentations(BaseAugmentation):
+     def _init(self, conf):
+         self.transforms = [
+             A.RandomBrightnessContrast(p=0.5),
+-            _gauss_noise_transform(),
++            A.GaussNoise(var_limit=(5.0, 112.0), mean=0, per_channel=True, p=0.75),
+             A.Downscale(
+                 scale_min=0.5,
+                 scale_max=0.95,
+                 interpolation=dict(downscale=cv2.INTER_AREA, upscale=cv2.INTER_LINEAR),
+                 p=0.5,
+             ),
+-            A.Downscale(
+-                scale_min=0.5, scale_max=0.95, interpolation=cv2.INTER_LINEAR, p=0.5
+-            ),
+-            A.ImageCompression(
+-                quality_lower=20, quality_upper=85, p=1, always_apply=True
+-            ),
++            A.Downscale(scale_min=0.5, scale_max=0.95, interpolation=cv2.INTER_LINEAR, p=0.5),
++            A.ImageCompression(quality_lower=20, quality_upper=85, p=1, always_apply=True),
+             A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2, p=0.4),
+             A.Sharpen(alpha=(0.2, 0.5), lightness=(0.5, 1.0), p=0.5),
+             A.ToGray(always_apply=False, p=0.2),
+@@ -309,7 +287,7 @@ class GeoCalibAugmentations(BaseAugmentation):
+         ]
+ 
+         self.noise_transforms = [
+-            _gauss_noise_transform(),
++            A.GaussNoise(var_limit=(5.0, 112.0), mean=0, per_channel=True, p=0.75),
+             A.ImageCompression(quality_lower=20, quality_upper=100, p=1),
+             A.ISONoise(color_shift=(0.01, 0.05), intensity=(0.1, 0.5), p=0.5),
+             A.OneOrOther(
+@@ -379,11 +357,7 @@ class RevisitingAugmentations(BaseAugmentation):
+     def _init(self, conf):
+         self.transforms = [
+             A.ColorJitter(
+-                brightness=(0.5, 2),
+-                contrast=(0.5, 2),
+-                saturation=(0.5, 3),
+-                hue=0.05,
+-                p=1.0,
++                brightness=(0.5, 2), contrast=(0.5, 2), saturation=(0.5, 3), hue=0.05, p=1.0
+             ),
+             A.Rotate(limit=15, interpolation=cv2.INTER_CUBIC, p=1.0),
+             A.HorizontalFlip(p=0.3),
+diff --git a/siclib/models/networks/anycalib_net.py b/siclib/models/networks/anycalib_net.py
+index c217d4a..f3d4126 100644
+--- a/siclib/models/networks/anycalib_net.py
++++ b/siclib/models/networks/anycalib_net.py
+@@ -275,10 +275,11 @@ class Calibrator:
+                 )
+                 success_ = success_ and cost < cost0
+                 intrinsics_icovs.append(intrins_icovs_)
+-                if cost >= cost0:
+-                    logger.warning(f"Worse cost after optimization: {cost:.2e} >= {cost0:.2e}")
+-                else:
+-                    intrinsics_ = intrinsics_opt
++                # if cost >= cost0:
++                #     logger.warning(f"Worse cost after optimization: {cost:.2e} >= {cost0:.2e}")
++                # else:
++                #     intrinsics_ = intrinsics_opt
++                if cost < cost0: intrinsics_ = intrinsics_opt
+ 
+             intrinsics.append(intrinsics_)
+             success.append(success_)
+@@ -455,6 +456,7 @@ class AnyCalib(BaseModel):
+     required_data_keys = ["image"]
+ 
+     def _init(self, conf):
++        raise NotImplementedError #
+         logger.debug(f"Initializing AnyCalib with {conf}")
+ 
+         self.backbone: Encoder = ENCODERS[conf.backbone.name](**conf.backbone.conf)
+diff --git a/siclib/models/optimization/lm_optimizer.py b/siclib/models/optimization/lm_optimizer.py
+index 50b899a..aa5e16c 100644
+--- a/siclib/models/optimization/lm_optimizer.py
++++ b/siclib/models/optimization/lm_optimizer.py
+@@ -508,8 +508,8 @@ class LMOptimizer(BaseModel):
+ 
+             prev_cost = new_cost
+ 
+-            if i == self.num_steps - 1 and self.conf.early_stop:
+-                logger.warning("Reached maximum number of steps without convergence.")
++            #if i == self.num_steps - 1 and self.conf.early_stop:
++            #    logger.warning("Reached maximum number of steps without convergence.")
+ 
+         final_errors = self.calculate_residuals(camera_opt, gravity_opt, data)  # (B, N, 3)
+         final_cost, weights = self.calculate_costs(final_errors, data)  # (B, N)
+diff --git a/siclib/requirements.txt b/siclib/requirements.txt
+index 608e3ec..e0a5556 100644
+--- a/siclib/requirements.txt
++++ b/siclib/requirements.txt
+@@ -5,13 +5,12 @@ kornia
+ matplotlib
+ 
+ omegaconf
+-albumentations<2 # deprecations: https://github.com/albumentations-team/albumentations/releases/tag/2.0.0
++albumentations
+ h5py
+ hydra-core
+ pandas
+ tqdm
+ tensorboard
+-setuptools<82 # https://github.com/tensorflow/tensorboard/issues/7107
+ wandb
+ 
+ gdown
+\ No newline at end of file
+diff --git a/siclib/utils/tools.py b/siclib/utils/tools.py
+index f71264a..b3869ec 100644
+--- a/siclib/utils/tools.py
++++ b/siclib/utils/tools.py
+@@ -7,7 +7,7 @@ Author: Paul-Edouard Sarlin (skydes)
+ import os
+ import random
+ import time
+-from collections.abc import Iterable, Callable
++from collections.abc import Iterable
+ from contextlib import contextmanager
+ from typing import Optional
+ 
+@@ -17,13 +17,6 @@ import torch
+ # flake8: noqa
+ # mypy: ignore-errors
+ 
+-_np_trapz: Callable[..., np.ndarray | float]
+-
+-try:
+-    _np_trapz = np.trapezoid  # type: ignore[attr-defined]
+-except AttributeError:
+-    _np_trapz = np.trapz  # type: ignore[attr-defined]
+-
+ 
+ class AverageMetric:
+     def __init__(self, elements=None):
+@@ -93,14 +86,9 @@ class PRMetric:
+     @torch.no_grad()
+     def update(self, labels, predictions, mask=None):
+         assert labels.shape == predictions.shape
+-        self.labels += (
+-            (labels[mask] if mask is not None else labels).cpu().numpy().tolist()
+-        )
++        self.labels += (labels[mask] if mask is not None else labels).cpu().numpy().tolist()
+         self.predictions += (
+-            (predictions[mask] if mask is not None else predictions)
+-            .cpu()
+-            .numpy()
+-            .tolist()
++            (predictions[mask] if mask is not None else predictions).cpu().numpy().tolist()
+         )
+ 
+     @torch.no_grad()
+@@ -183,8 +171,7 @@ def compute_auc(errors, thresholds, min_error: Optional[float] = None):
+         last_index = np.searchsorted(errors, t, side="right")
+         r = np.r_[recall[:last_index], recall[last_index - 1]]
+         e = np.r_[errors[:last_index], t]
+-        # auc = np.trapezoid(r, x=e) / t
+-        auc = _np_trapz(r, x=e) / t
++        auc = np.trapz(r, x=e) / t
+         aucs.append(np.round(auc, 4))
+     return aucs
+ 
