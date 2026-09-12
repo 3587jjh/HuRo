@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="HuRo: Robotizing Human Videos for Scalable VLA Pretraining. We convert 630K episodes and 142M frames of human video into robot-aligned observation-action data and show that scaling it improves real-world manipulation." />
+  <meta property="og:title" content="HuRo: Robotizing Human Videos for Scalable VLA Pretraining" />
+  <meta property="og:description" content="Scaling robotized human video to 630K episodes and 142M frames for vision-language-action pretraining." />
+  <meta property="og:image" content="./static/images/teaser.png" />
+  <title>HuRo: Robotizing Human Videos for Scalable VLA Pretraining</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/jpswalsh/academicons@1/css/academicons.min.css" />
+  <link rel="stylesheet" href="./static/css/style.css?v=20260905g" />
+  <script src="./static/js/main.js?v=20260905g"></script>
+</head>
+<body>
+
+<!-- ================= NAV ================= -->
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#top">HuRo</a>
+    <div class="nav-links">
+      <a href="#tldr">Overview</a>
+      <a href="#robotization">Examples</a>
+      <a href="#method">Method</a>
+      <a href="#results">Results</a>
+      <a href="#more">More</a>
+      <a href="#bibtex">BibTeX</a>
+      <button class="theme-btn" onclick="toggleTheme()" aria-label="Toggle theme"><i class="fa-solid fa-moon"></i></button>
+    </div>
+  </div>
+</nav>
+
+<!-- ================= HERO ================= -->
+<header class="hero" id="top">
+  <div class="wrap">
+    <h1 class="title"><span class="name">HuRo</span>: Robotizing Human Videos<br />for Scalable VLA Pretraining</h1>
+    <p class="authors">
+      <a href="https://sites.google.com/view/jinho-jeong" target="_blank" rel="noopener"><b>Jinho Jeong</b></a><sup>1,2,*</sup>,
+      <a href="https://joocjun.github.io/" target="_blank" rel="noopener"><b>Se June Joo</b></a><sup>1,*</sup>,
+      <a href="https://kang-jaehyun.github.io/" target="_blank" rel="noopener"><b>Jaehyun Kang</b></a><sup>1</sup>,
+      <a href="https://sites.google.com/view/dongyunkim/home" target="_blank" rel="noopener"><b>Dongyun Kim</b></a><sup>2</sup>,
+      <a href="https://github.com/kyn7666" target="_blank" rel="noopener"><b>Yena Kim</b></a><sup>2</sup>,
+      <a href="https://kimhanjung.github.io/" target="_blank" rel="noopener"><b>Hanjung Kim</b></a><sup>2</sup>,
+      <a href="https://www.ciplab.kr/members/professor" target="_blank" rel="noopener"><b>Seon Joo Kim</b></a><sup>2</sup>
+    </p>
+    <p class="affil"><sup>1</sup> RLWRLD &nbsp;&nbsp; <sup>2</sup> Yonsei University</p>
+    <p class="note"><sup>*</sup> Equal contribution</p>
+    <p class="venue">Conference on Robot Learning (CoRL) 2026</p>
+    <div class="btns">
+      <!-- TODO: re-enable Code once the repository is public:
+           <a class="btn" href="https://github.com/3587jjh/HuRo" target="_blank" rel="noopener"><i class="fa-brands fa-github"></i> Code</a> -->
+      <a class="btn" href="https://arxiv.org/pdf/2609.10706" target="_blank" rel="noopener"><i class="fa-solid fa-file-pdf"></i> Paper</a>
+      <a class="btn" href="https://arxiv.org/abs/2609.10706" target="_blank" rel="noopener"><i class="ai ai-arxiv"></i> arXiv</a>
+      <a class="btn disabled" title="Coming soon"><i class="fa-brands fa-github"></i> Code</a>
+      <a class="btn disabled" title="Coming soon"><i class="fa-solid fa-database"></i> Datasets</a>
+    </div>
+  </div>
+</header>
+
+<!-- ================= TL;DR + TEASER ================= -->
+<section id="tldr">
+  <div class="wrap">
+    <div class="tldr-box">
+      <span class="tldr-tag">TL;DR</span>
+      <p>
+        Can we <b>scale VLA pretraining</b> with human videos converted into robot observations and actions?
+        We build a robotization pipeline that turns heterogeneous egocentric human videos into
+        robot-aligned observations and retargeted actions, and use it to construct the <b><span class="huro">HuRo</span> dataset</b>:
+        630K robotized episodes and 142M frames. Scaling this data improves real-world performance under both
+        in-distribution and out-of-distribution conditions, with the <b>largest gains in the out-of-distribution setting</b>.
+      </p>
+    </div>
+
+    <div class="fig-card" style="margin-top:1.6rem;">
+      <img src="./static/images/teaser.png" alt="HuRo overview" />
+    </div>
+    <p class="caption">
+      <b>Overview.</b> Large-scale human videos are transformed into VLA episodes with robotized observations,
+      language instructions, robot states, and actions. VLA policies pretrained on larger <span class="huro">HuRo</span> subsets achieve higher
+      real-world manipulation performance after downstream finetuning.
+    </p>
+
+    <div class="stat-label">Dataset scale</div>
+    <div class="stats">
+      <div class="stat"><div class="num">630K</div><div class="lbl">Robotized episodes</div></div>
+      <div class="stat"><div class="num">142M</div><div class="lbl">Processed frames</div></div>
+      <div class="stat"><div class="num">1,317h</div><div class="lbl">Video at 30 fps</div></div>
+      <div class="stat"><div class="num">5</div><div class="lbl">Human-video sources</div></div>
+    </div>
+    <div class="stat-label">Real-world impact (0% to 100% pretraining)</div>
+    <div class="stats three">
+      <div class="stat gain"><div class="num">51.5 &rarr; 80.3</div><div class="lbl">Overall completion (%)</div></div>
+      <div class="stat gain"><div class="num">68.1 &rarr; 88.4</div><div class="lbl">In-distribution (%)</div></div>
+      <div class="stat gain"><div class="num">34.9 &rarr; 72.2</div><div class="lbl">Out-of-distribution (%)</div></div>
+    </div>
+    <p class="caption one-line">Frame share: EgoDex 55%, EgoVerse 27%, Ego4D 10%, Ego10K 6%, EPIC-Kitchens 2%.</p>
+  </div>
+</section>
+
+<!-- ================= WHY HuRo ================= -->
+<section class="tinted" id="why">
+  <div class="wrap">
+    <h2 class="section-title">Comparison with Prior Work</h2>
+    <p class="section-sub">
+      <span class="huro">HuRo</span> scales <span class="mark">jointly robot-aligned observation-action</span> data from
+      diverse human videos for end-to-end VLA pretraining.
+    </p>
+    <div class="mot-grid">
+      <div class="mot-card problem">
+        <h4>Prior robotized-video pretraining</h4>
+        <ul>
+          <li>Jointly robotized data from target-task demonstrations</li>
+          <li>Aligns observations or actions, not both at scale</li>
+          <li>Uses robotized videos for visual pretraining with auxiliary objectives</li>
+          <li>Limited-scale pretraining data</li>
+        </ul>
+      </div>
+      <div class="mot-card solution">
+        <h4><span class="huro">HuRo</span> (ours)</h4>
+        <ul>
+          <li>Robotizes everyday human videos from five egocentric datasets</li>
+          <li>Jointly robot-aligned observations <b>and</b> retargeted actions</li>
+          <li>End-to-end VLA pretraining on robotized observations and actions</li>
+          <li>Larger scale: <b>142M frames / 630K episodes</b></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= ROBOTIZATION ================= -->
+<section id="robotization">
+  <div class="wrap">
+    <h2 class="section-title">Robotization Examples</h2>
+    <p class="section-sub">
+      The visible human is removed, a rendered <b>ALLEX</b> humanoid is overlaid, and human hand motion is retargeted
+      into robot actions. Egocentric human videos become robot-aligned observations paired with actions and language.
+    </p>
+    <div class="pair">
+      <div>
+        <span class="tag human">Input &middot; Human videos</span>
+        <video autoplay muted loop playsinline preload="metadata" poster="./static/images/posters/human_grid.jpg">
+          <source src="./static/videos/human_grid.mp4" type="video/mp4" />
+        </video>
+      </div>
+      <div>
+        <span class="tag robot">Output &middot; Robotized (ALLEX overlay)</span>
+        <video autoplay muted loop playsinline preload="metadata" poster="./static/images/posters/robotized_grid.jpg">
+          <source src="./static/videos/robotized_grid.mp4" type="video/mp4" />
+        </video>
+      </div>
+    </div>
+    <p class="caption">Robotized observations across diverse scenes from five egocentric human-video sources.</p>
+  </div>
+</section>
+
+<!-- ================= METHOD ================= -->
+<section class="tinted" id="method">
+  <div class="wrap">
+    <h2 class="section-title">Robotization Pipeline</h2>
+    <p class="section-sub">
+      Three stages convert an egocentric human video into a robotized episode, estimating any intermediate signals a
+      source is missing so that heterogeneous videos map into one robot format.
+    </p>
+    <div class="fig-card">
+      <img src="./static/images/pipeline.png" alt="HuRo construction pipeline" />
+    </div>
+    <div class="steps">
+      <div class="step">
+        <div class="n">1</div>
+        <h4>Human video annotation</h4>
+        <p>Off-the-shelf models fill in missing camera geometry and 3D hand poses, split the video into
+          manipulation chunks, and caption each chunk with a VLM.</p>
+      </div>
+      <div class="step">
+        <div class="n">2</div>
+        <h4>Action conversion</h4>
+        <p>The annotated hand motion is retargeted to a robot joint trajectory, yielding robot states and actions.</p>
+      </div>
+      <div class="step">
+        <div class="n">3</div>
+        <h4>Visual conversion</h4>
+        <p>The visible human is segmented and inpainted away, then a robot rendered in simulation is overlaid onto the cleaned scene.</p>
+      </div>
+    </div>
+    <p class="caption">
+      We instantiate <span class="huro">HuRo</span> with <b>ALLEX</b> (a bimanual dexterous humanoid) and pretrain a VLA
+      policy, then finetune on a small set of real-robot demonstrations.
+    </p>
+  </div>
+</section>
+
+<!-- ================= RESULTS ================= -->
+<section id="results">
+  <div class="wrap">
+    <h2 class="section-title">Real-World Results on Four ALLEX Tasks</h2>
+    <p class="section-sub">
+      <i>Apple Pick-and-Place</i>, <i>Cup Stacking</i>, <i>Cup-Noodle Handover</i>, and <i>Microwave Loading</i>,
+      evaluated across in-distribution (ID) and out-of-distribution (OOD) conditions with spatial and
+      visual shifts.
+    </p>
+    <div class="fig-card">
+      <img src="./static/images/main_results.png" alt="Main results on four real-world tasks" />
+    </div>
+
+    <div class="result">
+      <div class="n">1</div>
+      <div>
+        <h4>Robotized pretraining scales real-robot performance</h4>
+        <p>Downstream completion rises consistently with pretraining scale under both ID and OOD.
+          At full scale, <span class="huro">HuRo</span> pretraining also outperforms the
+          &pi;<sub>0.5</sub> and GR00T N1.6 reference models under both ID and OOD.</p>
+      </div>
+    </div>
+    <div class="result">
+      <div class="n">2</div>
+      <div>
+        <h4>Visual robotization improves OOD robustness</h4>
+        <p>With the same source clips and the same retargeted action supervision,
+          a <b>10% overlay</b> subset outperforms the <b>100% no-overlay</b> variant on OOD (<b>59.5% vs. 55.7%</b>).</p>
+      </div>
+    </div>
+
+    <h3 class="block-title">Example rollouts</h3>
+    <div class="vgrid">
+      <div>
+        <video autoplay muted loop playsinline preload="metadata" poster="./static/images/posters/rollout_apple.jpg">
+          <source src="./static/videos/rollout_apple.mp4" type="video/mp4" /></video>
+        <div class="vcap">Apple Pick-and-Place</div>
+      </div>
+      <div>
+        <video autoplay muted loop playsinline preload="metadata" poster="./static/images/posters/rollout_cupstack.jpg">
+          <source src="./static/videos/rollout_cupstack.mp4" type="video/mp4" /></video>
+        <div class="vcap">Cup Stacking</div>
+      </div>
+      <div>
+        <video autoplay muted loop playsinline preload="metadata" poster="./static/images/posters/rollout_noodle.jpg">
+          <source src="./static/videos/rollout_noodle.mp4" type="video/mp4" /></video>
+        <div class="vcap">Cup-Noodle Handover</div>
+      </div>
+      <div>
+        <video autoplay muted loop playsinline preload="metadata" poster="./static/images/posters/rollout_microwave.jpg">
+          <source src="./static/videos/rollout_microwave.mp4" type="video/mp4" /></video>
+        <div class="vcap">Microwave Loading</div>
+      </div>
+    </div>
+
+    <h3 class="block-title">Additional task: Diverse Pick-and-Place</h3>
+    <p class="lead">
+      Beyond the four main tasks, Diverse Pick-and-Place requires sequentially grasping two objects that demand
+      different grasp types and placing them into a basket.
+      It is tested under object and spatial shifts.
+    </p>
+    <div class="result" style="margin-top:.4rem;">
+      <div class="n">3</div>
+      <div>
+        <h4>End-to-end pretraining outperforms visual-only transfer</h4>
+        <p>Pretraining observations <i>and</i> retargeted actions end-to-end substantially outperforms
+          <b>PT (Visual Only)</b>, which keeps the pretrained visual pathway but reinitializes the action head.
+          <b>PT (Visual + Action)</b> reaches <b>61.1% ID / 50.0% OOD</b> and produces demonstration-consistent grasps
+          where <b>No PT</b> and <b>PT (Visual Only)</b> grasp imprecisely.</p>
+      </div>
+    </div>
+    <div class="fig-card" style="margin-top:1.2rem;">
+      <img src="./static/images/end2end.png" alt="Effect of end-to-end VLA pretraining" />
+    </div>
+  </div>
+</section>
+
+<!-- ================= MORE IN THE PAPER (carousel) ================= -->
+<section class="tinted" id="more">
+  <div class="wrap">
+    <h2 class="section-title">Additional Experiments</h2>
+    <p class="section-sub">See the paper for detailed evaluation settings and further analysis.</p>
+
+    <div class="exp-grid">
+
+      <!-- 1. Comparison with video-generation pretraining -->
+      <div class="exp-card" id="exp1">
+        <button class="exp-toggle" type="button" onclick="expToggle(this)" aria-expanded="false" aria-controls="exp1-body">
+          <span class="exp-thumb"><img src="./static/images/scaling_source.png" alt="" /></span>
+          <span class="exp-label"><span class="idx">01</span><span class="ttl">Comparison with video-generation pretraining</span></span>
+          <span class="exp-chev"><i class="fa-solid fa-chevron-down"></i></span>
+        </button>
+        <div class="exp-panel" id="exp1-body" hidden>
+          <div class="exp-panel-inner">
+            <div class="exp-body">
+              <div class="exp-media">
+                <img src="./static/images/scaling_source.png" alt="Scaling comparison with video-generation pretraining" />
+              </div>
+              <div class="exp-text">
+                <p><span class="huro">HuRo</span> with only <b>0.7M</b> frames already outperforms a DreamGen-based image-to-video + inverse-dynamics baseline (I2V + IDM) at <b>7.0M</b> frames.</p>
+                <p>The gap widens with the pretraining budget, especially under out-of-distribution evaluation, where the baseline shows no further gain from 3.5M to 7.0M frames while <span class="huro">HuRo</span> continues to improve.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. Robotization ablation -->
+      <div class="exp-card" id="exp2">
+        <button class="exp-toggle" type="button" onclick="expToggle(this)" aria-expanded="false" aria-controls="exp2-body">
+          <span class="exp-thumb fit"><img src="./static/images/thumbs/card2.png" alt="" /></span>
+          <span class="exp-label"><span class="idx">02</span><span class="ttl">Robotization ablation</span></span>
+          <span class="exp-chev"><i class="fa-solid fa-chevron-down"></i></span>
+        </button>
+        <div class="exp-panel" id="exp2-body" hidden>
+          <div class="exp-panel-inner">
+            <p class="exp-take">
+              Variants differ only in how human motion becomes robot targets: end-effector (EEF, wrist pose) targets from
+              <b>fixed camera-to-robot extrinsics</b> vs. <span class="huro">HuRo</span>'s <b>camera-motion-aware</b>
+              conversion, with or without hand (finger) targets. Camera-aware conversion improves both ID and OOD, and
+              hand targets add further gains.
+            </p>
+            <div class="exp-body no-media">
+              <div>
+                <div class="table-card"><div class="table-scroll">
+                  <table class="res">
+                    <thead><tr><th>Robotization variant</th><th>ID</th><th>OOD</th></tr></thead>
+                    <tbody>
+                      <tr><td>No PT</td><td>63.9</td><td>25.0</td></tr>
+                      <tr><td>Fixed-EEF (fixed extrinsics)</td><td>75.0</td><td>50.0</td></tr>
+                      <tr><td>Fixed-EEF + Hand</td><td class="second">80.6</td><td class="second">61.1</td></tr>
+                      <tr class="ours"><td>HuRo-EEF + Hand (ours)</td><td class="best">86.1</td><td class="best">63.9</td></tr>
+                    </tbody>
+                  </table>
+                </div></div>
+                <p class="exp-note">Completion (%).</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. Robotized vs. human-domain pretraining -->
+      <div class="exp-card" id="exp3">
+        <button class="exp-toggle" type="button" onclick="expToggle(this)" aria-expanded="false" aria-controls="exp3-body">
+          <span class="exp-thumb fit"><img src="./static/images/thumbs/card3.png" alt="" /></span>
+          <span class="exp-label"><span class="idx">03</span><span class="ttl">Robotized vs. human-domain pretraining</span></span>
+          <span class="exp-chev"><i class="fa-solid fa-chevron-down"></i></span>
+        </button>
+        <div class="exp-panel" id="exp3-body" hidden>
+          <div class="exp-panel-inner">
+            <p class="exp-take">
+              Pretraining on <b>robotized observations and robot actions</b> outperforms pretraining on the same clips with
+              human observations and human-hand actions under OOD conditions on both tasks.
+            </p>
+            <div class="exp-body no-media">
+              <div>
+                <div class="table-card"><div class="table-scroll">
+                  <table class="res">
+                    <thead><tr><th>Method</th><th>PT obs. / action</th><th>Cup Stacking</th><th>Cup-Noodle Handover</th></tr></thead>
+                    <tbody>
+                      <tr><td>No PT</td><td class="dim">none</td><td class="second">31.9</td><td>16.7</td></tr>
+                      <tr><td>Human-HRDT</td><td>Human / Human</td><td>5.6</td><td class="second">37.5</td></tr>
+                      <tr><td>Human-VITRA</td><td>Human / Human</td><td>0.0</td><td>9.7</td></tr>
+                      <tr class="ours"><td>Ours (100% PT)</td><td>Robotized / Robot</td><td class="best">70.8</td><td class="best">66.7</td></tr>
+                    </tbody>
+                  </table>
+                </div></div>
+                <p class="exp-note">OOD completion (%) in a separate environment with an unseen background. Human-domain variants use the same clips and pretraining scale as ours.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. Mixed-source vs. single-source pretraining -->
+      <div class="exp-card" id="exp4">
+        <button class="exp-toggle" type="button" onclick="expToggle(this)" aria-expanded="false" aria-controls="exp4-body">
+          <span class="exp-thumb fit"><img src="./static/images/thumbs/card4.png" alt="" /></span>
+          <span class="exp-label"><span class="idx">04</span><span class="ttl">Mixed-source vs. single-source pretraining</span></span>
+          <span class="exp-chev"><i class="fa-solid fa-chevron-down"></i></span>
+        </button>
+        <div class="exp-panel" id="exp4-body" hidden>
+          <div class="exp-panel-inner">
+            <p class="exp-take">
+              A mixed-source 50% subset uses <b>fewer frames</b> than the full EgoDex-only subset yet covers far more
+              verbs, objects, and verb-object pairs, and reaches <b>higher ID and OOD completion</b> on the four ALLEX tasks.
+            </p>
+            <div class="exp-body two-tables">
+              <div>
+                <div class="table-card"><div class="table-scroll">
+                  <table class="res">
+                    <thead><tr><th>Pretraining data</th><th>Frames</th><th>ID</th><th>OOD</th></tr></thead>
+                    <tbody>
+                      <tr><td>EgoDex-only</td><td>78.9M</td><td>63.9</td><td>54.2</td></tr>
+                      <tr class="ours"><td>Mixed 50%</td><td>71.1M</td><td class="best">78.2</td><td class="best">69.8</td></tr>
+                    </tbody>
+                  </table>
+                </div></div>
+                <p class="tbl-cap">Downstream completion (%), four ALLEX tasks.</p>
+              </div>
+              <div>
+                <div class="table-card"><div class="table-scroll">
+                  <table class="res">
+                    <thead><tr><th>Variant</th><th>Visual cov.</th><th>Verbs</th><th>Objects</th><th>Verb-object</th></tr></thead>
+                    <tbody>
+                      <tr><td>Mixed 10%</td><td>0.664</td><td>521</td><td>1,300</td><td>11,787</td></tr>
+                      <tr><td>Mixed 50%</td><td>0.678</td><td>778</td><td>1,980</td><td>25,656</td></tr>
+                      <tr class="ours"><td>Mixed 100%</td><td class="best">0.687</td><td class="best">959</td><td class="best">2,344</td><td class="best">35,358</td></tr>
+                      <tr><td>EgoDex-only</td><td>0.616</td><td>136</td><td>268</td><td>938</td></tr>
+                    </tbody>
+                  </table>
+                </div></div>
+                <p class="tbl-cap">Visual coverage against 20K OpenImages references, and unique instruction terms.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 5. Cross-embodiment transfer -->
+      <div class="exp-card" id="exp5">
+        <button class="exp-toggle" type="button" onclick="expToggle(this)" aria-expanded="false" aria-controls="exp5-body">
+          <span class="exp-thumb"><img src="./static/images/thumbs/card5.png" alt="" /></span>
+          <span class="exp-label"><span class="idx">05</span><span class="ttl">Cross-embodiment transfer</span></span>
+          <span class="exp-chev"><i class="fa-solid fa-chevron-down"></i></span>
+        </button>
+        <div class="exp-panel" id="exp5-body" hidden>
+          <div class="exp-panel-inner">
+            <p class="exp-take">
+              ALLEX-targeted <span class="huro">HuRo</span> pretraining transfers to <i class="nb">OpenArm Fruit Pick-and-Place</i>,
+              with the <b>best OOD and overall completion</b> among the compared variants.
+            </p>
+            <div class="exp-body">
+              <div class="exp-media">
+                <img src="./static/images/transfer_openarm.png" alt="OpenArm setup" />
+              </div>
+              <div>
+                <div class="table-card"><div class="table-scroll">
+                  <table class="res">
+                    <thead><tr><th>Variant</th><th>ID avg.</th><th>OOD avg.</th><th>Overall</th></tr></thead>
+                    <tbody>
+                      <tr><td>No PT</td><td>54.2</td><td>43.8</td><td>49.0</td></tr>
+                      <tr><td>Human-HRDT</td><td class="best">75.0</td><td>56.3</td><td class="second">65.6</td></tr>
+                      <tr><td>Human-VITRA</td><td>33.3</td><td>12.5</td><td>22.9</td></tr>
+                      <tr><td>Ours (visual-only)</td><td>62.5</td><td>25.0</td><td>43.8</td></tr>
+                      <tr><td>Ours (no-overlay)</td><td>62.5</td><td class="second">62.5</td><td>62.5</td></tr>
+                      <tr class="ours"><td>Ours (HuRo PT)</td><td class="second">70.8</td><td class="best">75.0</td><td class="best">72.9</td></tr>
+                    </tbody>
+                  </table>
+                </div></div>
+                <p class="exp-note">Completion (%). OOD uses an unseen target fruit with seen and unseen distractors.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 6. Multi-embodiment robotization and pretraining -->
+      <div class="exp-card" id="exp6">
+        <button class="exp-toggle" type="button" onclick="expToggle(this)" aria-expanded="false" aria-controls="exp6-body">
+          <span class="exp-thumb"><img src="./static/images/thumbs/card6.png" alt="" /></span>
+          <span class="exp-label"><span class="idx">06</span><span class="ttl">Multi-embodiment robotization and pretraining</span></span>
+          <span class="exp-chev"><i class="fa-solid fa-chevron-down"></i></span>
+        </button>
+        <div class="exp-panel" id="exp6-body" hidden>
+          <div class="exp-panel-inner">
+            <p class="exp-take">
+              The same human-video annotations robotize to four embodiments, and jointly pretraining on
+              <b>ALLEX + OpenArm</b> robotizations improves both ID and OOD over ALLEX-only.
+            </p>
+            <div class="exp-body">
+              <div class="exp-media">
+                <img src="./static/images/multi_embodiment.png" alt="Robotization across four embodiments" />
+                <div class="mcap grid4"><span>(a) ALLEX<small>&nbsp;</small></span><span>(b) OpenArm<small>XHand1 hands</small></span><span>(c) RBY1<small>Wuji2 hands</small></span><span>(d) GR1<small>&nbsp;</small></span></div>
+              </div>
+              <div>
+                <div class="table-card"><div class="table-scroll">
+                  <table class="res">
+                    <thead><tr><th>Pretraining data</th><th>ID</th><th>OOD</th></tr></thead>
+                    <tbody>
+                      <tr><td>ALLEX-only</td><td>86.1</td><td>63.9</td></tr>
+                      <tr class="ours"><td>ALLEX + OpenArm (joint)</td><td class="best">91.7</td><td class="best">77.8</td></tr>
+                    </tbody>
+                  </table>
+                </div></div>
+                <p class="exp-note">Completion (%). Annotations and inpainting are shared across embodiments, and adding a new embodiment costs roughly 10% or less of the profiled pipeline.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 7. Pipeline cost and data retention -->
+      <div class="exp-card" id="exp7">
+        <button class="exp-toggle" type="button" onclick="expToggle(this)" aria-expanded="false" aria-controls="exp7-body">
+          <span class="exp-thumb fit"><img src="./static/images/thumbs/card7.png" alt="" /></span>
+          <span class="exp-label"><span class="idx">07</span><span class="ttl">Pipeline cost and data retention</span></span>
+          <span class="exp-chev"><i class="fa-solid fa-chevron-down"></i></span>
+        </button>
+        <div class="exp-panel" id="exp7-body" hidden>
+          <div class="exp-panel-inner">
+            <p class="exp-take">
+              Across the two sources, the full pipeline runs at roughly <b>8 to 10&times;</b> the clip duration on a single RTX 5090, and once
+              manipulation segments are selected, <b>97 to 98%</b> of their frames reach the final dataset.
+            </p>
+            <div class="exp-body two-tables">
+              <div>
+                <div class="table-card"><div class="table-scroll">
+                  <table class="res">
+                    <thead><tr><th>Pipeline stage</th><th>EPIC-Kitchens</th><th>Ego4D</th></tr></thead>
+                    <tbody>
+                      <tr><td>Human video annotation</td><td>89.8 min</td><td>77.9 min</td></tr>
+                      <tr><td>Action conversion</td><td>6.0 min</td><td>3.6 min</td></tr>
+                      <tr><td>Visual conversion</td><td>47.3 min</td><td>38.6 min</td></tr>
+                      <tr class="ours"><td>Total</td><td class="best">143.1 min (9.5&times;)</td><td class="best">120.1 min (8.0&times;)</td></tr>
+                    </tbody>
+                  </table>
+                </div></div>
+                <p class="tbl-cap">Processing time per 15-minute clip, single RTX 5090.</p>
+              </div>
+              <div>
+                <div class="table-card"><div class="table-scroll">
+                  <table class="res">
+                    <thead><tr><th>Retention</th><th>EPIC-Kitchens</th><th>Ego4D</th></tr></thead>
+                    <tbody>
+                      <tr><td>Source video</td><td>96.2 h</td><td>1,589.1 h</td></tr>
+                      <tr><td>Manipulation selection</td><td>17.3%</td><td>6.9%</td></tr>
+                      <tr class="ours"><td>Post-selection retention</td><td class="best">98.1%</td><td class="best">97.0%</td></tr>
+                    </tbody>
+                  </table>
+                </div></div>
+                <p class="tbl-cap">Manipulation selection is the fraction of source video kept as manipulation segments, lower for Ego4D with its less sustained hand-object interaction. Across all five sources, 3,298.6 h of input yields 142.2M final frames (1,316.8 h).</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 8. Pipeline quality diagnostics -->
+      <div class="exp-card" id="exp8">
+        <button class="exp-toggle" type="button" onclick="expToggle(this)" aria-expanded="false" aria-controls="exp8-body">
+          <span class="exp-thumb fit"><img src="./static/images/thumbs/card8.png" alt="" /></span>
+          <span class="exp-label"><span class="idx">08</span><span class="ttl">Pipeline quality diagnostics</span></span>
+          <span class="exp-chev"><i class="fa-solid fa-chevron-down"></i></span>
+        </button>
+        <div class="exp-panel" id="exp8-body" hidden>
+          <div class="exp-panel-inner">
+            <p class="exp-take">
+              Reconstruction, retargeting, kinematic validity, and visual conversion, measured on EgoDex annotations and
+              on generated <span class="huro">HuRo</span> data.
+            </p>
+            <div class="exp-body no-media">
+              <div>
+                <div class="table-card"><div class="table-scroll">
+                  <table class="res">
+                    <thead><tr><th>Component</th><th style="text-align:left">Diagnostic</th><th>Result</th></tr></thead>
+                    <tbody>
+                      <tr><td rowspan="2">Camera trajectory</td><td style="text-align:left">Per-frame rotation error vs. EgoDex</td><td>0.218&deg; median</td></tr>
+                      <tr><td style="text-align:left">SE(3)-aligned position ATE vs. EgoDex</td><td>4.47 mm median</td></tr>
+                      <tr><td>Hand pose</td><td style="text-align:left">Root-relative 21-keypoint error vs. EgoDex</td><td>20.4 mm median</td></tr>
+                      <tr><td>Retargeting</td><td style="text-align:left">Fingertip residual after IK</td><td>21.2 mm median</td></tr>
+                      <tr><td>Joint limits</td><td style="text-align:left">No violation &gt; 1&deg; at any scored joint/frame</td><td>62.5% of trajectories</td></tr>
+                      <tr><td>Self-collision</td><td style="text-align:left">No non-grasp self-contact in sampled frames</td><td>55.2% of trajectories</td></tr>
+                      <tr><td>Inpainting</td><td style="text-align:left">Reconstruction under arm-shaped masks</td><td>24.8 dB median</td></tr>
+                      <tr><td>Human removal</td><td style="text-align:left">Reduction in detected person pixels</td><td>93.3%</td></tr>
+                    </tbody>
+                  </table>
+                </div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+
+<!-- ================= BIBTEX ================= -->
+<section id="bibtex">
+  <div class="wrap">
+    <h2 class="section-title">BibTeX</h2>
+    <div class="bibtex-box" style="margin-top:1.4rem;">
+<pre>@misc{jeong2026huro,
+      title={HuRo: Robotizing Human Videos for Scalable VLA Pretraining},
+      author={Jinho Jeong and Se June Joo and Jaehyun Kang and Dongyun Kim and Yena Kim and Hanjung Kim and Seon Joo Kim},
+      year={2026},
+      eprint={2609.10706},
+      archivePrefix={arXiv},
+      primaryClass={cs.RO},
+      url={https://arxiv.org/abs/2609.10706},
+}</pre>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p>This work was conducted with support from RLWRLD, including access to the ALLEX humanoid platform and computational resources.</p>
+    <p>Source video adapted under each dataset's licence. <a href="https://github.com/3587jjh/HuRo/blob/main/THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener">Credits &amp; licences</a>.</p>
+    <p>Page design adapted from the <a href="https://choi-yeeun.github.io/MERIT/" target="_blank" rel="noopener">MERIT</a> project page.</p>
+  </div>
+</footer>
+
+</body>
+</html>
