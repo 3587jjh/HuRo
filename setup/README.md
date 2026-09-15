@@ -10,7 +10,7 @@ git submodule update --init --recursive
 ```
 
 Either path takes several hours, most of it spent compiling the CUDA extensions. The default build
-covers all eight architectures from 6.0 to 9.0, so the result runs on any GPU in that range.
+covers seven GPU architectures from compute capability 7.5 to 12.0.
 
 `TORCH_CUDA_ARCH_LIST` narrows the build to one architecture, which shortens it markedly.
 `nvidia-smi --query-gpu=compute_cap --format=csv,noheader` reports the compute capability of the
@@ -20,15 +20,13 @@ or image has to work on machines with different GPUs.
 
 ## 📌 Robot overlay requirements
 
-Every part of the pipeline except the robot overlay runs on any NVIDIA GPU the driver above
-supports. Isaac Sim renders the overlay through the RTX raytracer, which requires **RT
-cores**. The GPUs built without them cannot render it, among them the **V100** (compute
-capability 7.0), **A100** (8.0) and **H100** (9.0). The overlay then renders as black frames, or
-the render does not terminate, instead of failing with a clear error.
+Isaac Sim renders the robot overlay through the RTX raytracer, which requires **RT cores**.
+The GPUs built without them cannot render it, among them the **A100**
+(compute capability 8.0) and **H100** (9.0).
 
 Any GeForce RTX or RTX-series professional GPU carries the cores, among them the RTX 4090, L40S,
-A40 and RTX 6000 Ada. When no such GPU is available, `LAST_STAGE=9` in `run_pipeline.sh` stops the
-run after the retargeting, and the overlay follows later on a machine that has one.
+A40 and RTX 6000 Ada. Without one, set `LAST_STAGE=8` in `run_pipeline.sh` and run the
+overlay on another machine.
 
 The overlay also requires `OMNI_KIT_ACCEPT_EULA=Y`. Setting that variable accepts NVIDIA's
 Omniverse licence, which the install puts at `site-packages/isaacsim/LICENSE.txt`. Nothing in this
@@ -63,9 +61,9 @@ docker build -f setup/Dockerfile -t huro .  # several hours: the extensions comp
 ```
 
 `docker build -f setup/Dockerfile --build-arg TORCH_CUDA_ARCH_LIST=8.9 -t huro .` builds for that
-architecture alone. It is a build argument and does not survive into the image, so
-`setup/setup.sh dev` below recompiles detectron2 and sam2 for all eight architectures unless
-`TORCH_CUDA_ARCH_LIST` is exported in the container too.
+architecture alone. The build argument does not survive into the image. Export the same
+`TORCH_CUDA_ARCH_LIST` in the container before `setup/setup.sh dev` below, or that step recompiles
+detectron2 and sam2 for all seven architectures.
 
 On first entry, in this order:
 
@@ -76,19 +74,21 @@ On first entry, in this order:
 ```
 
 `setup/docker_run.sh` also sets `HF_HOME` to `/workspace/.hf_cache`. On the host that is
-`.hf_cache` beside the checkout, so the stage-7 VLM is downloaded once and outlives the container.
+`.hf_cache` beside the checkout, so the stage-6 VLM (below) is downloaded
+once and outlives the container.
 
 ## Model weights
 
-`setup/download.sh` fetches every checkpoint the stages need, and a re-run fetches only what is
-missing. The one exception is **MANO**, which requires registration at
-<https://mano.is.tue.mpg.de>. Download `mano_v*_*.zip` and place its two models at
+`setup/download.sh` fetches every checkpoint the stages need except two, and a re-run fetches
+only what is missing. The first exception is **MANO**, which requires registration
+at <https://mano.is.tue.mpg.de>. Download `mano_v*_*.zip`
+and place its two models at these paths:
 
 ```
 submodules/hawor/_DATA/data/mano/MANO_RIGHT.pkl
 submodules/hawor/_DATA/data_left/mano_left/MANO_LEFT.pkl
 ```
 
-The stage-7 Qwen3.5-9B VLM (~18 GB) is not among them. It downloads itself on first use into
-`$HF_HOME`, which defaults to `~/.cache/huggingface`. Run `hf download Qwen/Qwen3.5-9B` to
-fetch it in advance.
+The second exception is the stage-6 Qwen3.5-9B VLM (~18 GB). It downloads itself on first use
+into `$HF_HOME`, which defaults to `~/.cache/huggingface`. Run `hf download Qwen/Qwen3.5-9B`
+to fetch it in advance.

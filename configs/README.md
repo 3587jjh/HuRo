@@ -1,24 +1,24 @@
 # Adding a robot
 
 **Allex is the only robot this repository currently supports.** Adding another takes a URDF, one
-YAML file in this directory, and an entry in the LeRobot conversion code (§6).
+YAML file in `configs/`, and an entry in the LeRobot conversion code (§6).
 
 ## 1. The URDF
 
-Put the URDF under `assets/<robot>/` at the repository root, and its meshes in
+Put the URDF in `assets/<robot>/urdf/` at the repository root, and its meshes in
 `assets/<robot>/meshes/`. Git does not track the meshes, so copy them onto every machine
 that runs the pipeline.
 
 - **Meshes must resolve.** Use paths relative to the URDF, or `package://<pkg>/...`, which
-  resolves `<pkg>` to the URDF's grandparent directory. An unresolved mesh gives a robot with
-  **no visual geometry and no error**. The overlay caches the robot in `build/overlay/`, so
-  delete that directory after changing the meshes.
+  resolves `<pkg>` to the URDF's grandparent directory. A mesh that does not resolve leaves its
+  link with **no visual geometry**. The overlay caches the robot in `build/overlay/`, so delete
+  that directory after changing the meshes.
 - **`<mimic>` joints are allowed.** List them in `mimic_joints` (§4).
 - **The base frame must be x-forward, y-left, z-up** (ROS REP-103).
 
 ## 2. Frames the pipeline requires
 
-The pipeline needs two frames that a stock URDF usually lacks. Add each one to the URDF
+The pipeline needs frames that a stock URDF usually lacks. Add each one to the URDF
 as a zero-mass link on a fixed joint, and name it in the robot's YAML. Allex's
 additions are in `submodules_patches/allex_model.patch`.
 
@@ -38,7 +38,7 @@ than copying Allex's.** The fixed joint's `xyz` sets the link's **origin**. Alle
 at the wrist pitch joint.
 
 The figure below draws these axes on a person's hands and on Allex's hands.
-`check_frames.py` (§5) checks that the link has these axes.
+`configs/check_frames.py` (§5) checks the link against them.
 
 ![the wrist frames drawn on a person's hands and on Allex's hands](../docs/wrist_frames.png)
 
@@ -51,11 +51,12 @@ OpenCV's, as Allex does with `zed_left_camera_optical_opencv`.
 
 ## 3. The config
 
-Copy `allex.yaml` and work through it. Every field is required unless marked otherwise.
+Copy `configs/allex.yaml` to `configs/myrobot.yaml` and work through it. Every field is
+required unless marked otherwise.
 
 ```yaml
-name: myrobot                        # label only
-robot_urdf_path: assets/myrobot/robot.urdf   # repo-root relative
+name: myrobot                        # optional label
+robot_urdf_path: assets/myrobot/urdf/robot.urdf   # repo-root relative
 ```
 
 - **`joints`** — the joint groups. `left_arm`, `left_hand`, `right_arm` and `right_hand` are
@@ -66,9 +67,12 @@ robot_urdf_path: assets/myrobot/robot.urdf   # repo-root relative
   they can follow quick finger motion, and the waist, the neck and similar groups in
   `stiff_groups`, so they stay near the home pose. Leave the arm groups out of both.
 - **`keypoint_mapping`** — per side, MediaPipe hand index → URDF link. Index 0 is the wrist, then
-  thumb `1-4`, index `5-8`, middle `9-12`, ring `13-16`, pinky `17-20`, MCP→tip within each
-  finger. **Index 0 and the fingertips `4, 8, 12, 16, 20` are required.** The other indices are
-  optional. The more of them are mapped, the more closely each finger follows the human finger.
+  thumb `1-4`, index finger `5-8`, middle `9-12`, ring `13-16`, pinky `17-20`,
+  base→tip within each finger.
+
+  **Indices `0, 1, 5, 9, 17` and the fingertips `4, 8, 12, 16, 20` are required.**
+  The other indices are optional. The more of them are mapped, the more closely each finger
+  follows the human finger.
 
   **The solver reads each link at the joint that moves it, so map each index to the link that
   starts at that joint.** On Allex the index finger's PIP, index 6, is `L_Index_Middle_Link`.
@@ -80,9 +84,9 @@ robot_urdf_path: assets/myrobot/robot.urdf   # repo-root relative
 - **`eef_hand_joint_groups`** — per side, the `joints` group that holds the hand.
 - **`home_config`** (optional but recommended) — the robot's **neutral pose**, as
   `joint_name: radians`. Joints it does not name rest at 0. The solver pulls the joints toward
-  this pose on every frame. An all-zero pose, usually straight arms hanging down on a humanoid,
-  makes the retargeting worse. Bend the elbows, keep the arm joints off their limits, and put
-  the wrists neutral. The fingers can usually stay at zero.
+  this pose. An all-zero pose, usually straight arms hanging down on a humanoid, makes the
+  retargeting worse. Bend the elbows, keep the arm joints off their limits, and put the wrists
+  neutral. The fingers can usually stay at zero.
 
 ## 4. The `overlay` block
 
@@ -94,29 +98,30 @@ overlay:
     - Base_Link
 ```
 
-- **`mimic_joints`** — copy it from the URDF's `<mimic>` tags.
+- **`mimic_joints`** (optional) — copy it from the URDF's `<mimic>` tags.
 - **`hide_link_names`** — every link outside the arms and the hands, since the overlay shows only
   those. Each name hides only that link's own geometry, not the links below it.
 
 ## 5. Checking the config
 
 After writing the config, check it with `python configs/check_frames.py myrobot` before
-running the pipeline. The script needs only numpy, so it runs before the environment is built.
-For Allex it prints:
+running the pipeline. The script needs only numpy and PyYAML, so it runs before the environment
+is built. For Allex it prints:
 
 ![check_frames.py output for Allex](../docs/check_frames_allex.png)
 
-Then set `ROBOT="myrobot"` and `LAST_STAGE=10` in `run_pipeline.sh`, run it on the example clips,
-and watch the videos in `examples/clips_chunked/myrobot/overlay/video/`. A robot with no visible
-geometry means an unresolved mesh (§1).
+Then set `ROBOT="myrobot"` and `LAST_STAGE=9` in `run_pipeline.sh`, run it on the example clips,
+and watch the videos in `examples/clips_chunked/myrobot/overlay/video/`. A missing robot part
+means an unresolved mesh (§1).
 
 ## 6. The LeRobot conversion
 
-Copy Allex's entry in `_LEROBOT_TARGETS` of `pipeline/stage11_lerobot_convert.py` and edit it:
+Copy Allex's entry in `_LEROBOT_TARGETS` of `pipeline/stage10_lerobot_convert.py` and edit it:
 
 - `target_joint_names` — the joint order of the dataset's `observation.state` and `action`. It
   must contain every joint of the `joints` groups. Extra names become always-zero slots. Use the
   order the downstream trainer expects.
 - `state_name_suffix` — appended to the joint names for the state feature (`"_Qpos"` for Allex).
 - `video_key` — `observation.images.<key>`.
-- `create_modality_json` — the function that builds `meta/modality.json`.
+- `create_modality_json` — the function that builds `meta/modality.json`. Write one that
+  matches `target_joint_names` and `video_key`.

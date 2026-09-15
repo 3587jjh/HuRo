@@ -74,8 +74,9 @@ run writes and how to read them.
 ## 🔧 Setup
 
 The pipeline requires Linux, an NVIDIA GPU with at least 24 GB of VRAM and a driver supporting
-CUDA 12.8, and git. [`setup/README.md`](setup/README.md) covers the installation and how to
-download the off-the-shelf models the pipeline uses.
+CUDA 12.8, and git. The robot overlay also requires a GPU with RT cores.
+[`setup/README.md`](setup/README.md) covers the installation and how to download the
+off-the-shelf models the pipeline uses.
 
 ## ⚡ Run
 
@@ -83,14 +84,13 @@ download the off-the-shelf models the pipeline uses.
 ./run_pipeline.sh
 ```
 
-The script runs all eleven stages in order over a directory of clips. Edit the settings block at
-the top of it to configure a run. It holds the input directory, the target robot, the stage range,
-the GPUs the clips are spread across, and the extra arguments handed to individual stages.
-`INPUT_DIR` defaults to `examples/clips/`, and those two clips already meet the requirements in
-[Input video](#-input-video), so the script runs as it stands. All stages are resumable.
+The script runs all ten stages in order over a directory of clips. Edit the settings block at
+the top of it to configure a run. `INPUT_DIR` defaults to `examples/clips/`, and those two clips
+already meet the requirements in [Input video](#-input-video), so the script runs as it stands.
+All stages are resumable.
 
 The outputs are written beside the input directory, as `<clips>_intr`, `_contact`,
-`_contact_refined`, `_hand`, `_extr`, `_arm`, `_chunked` and `_lerobot`.
+`_contact_refined`, `_hand`, `_extr`, `_chunked` and `_lerobot`.
 [`examples/README.md`](examples/README.md) documents what each of them holds.
 
 Each stage can also be run on its own:
@@ -100,18 +100,18 @@ CUDA_VISIBLE_DEVICES=<gpu> python pipeline/stage<N>_<phase>_<name>.py \
     --input_dir <clip-dir> --part <a>/<b> --no_tqdm
 
 CUDA_VISIBLE_DEVICES=0 python pipeline/stage1_annot_intrinsics.py \
-    --input_dir examples/clips --part 1/4 --no_tqdm
+    --input_dir examples/clips --part 1/1 --no_tqdm
 ```
 
-Every stage accepts those three flags. Stages 9 to 11 additionally accept `--robot_name`,
-which defaults to `allex` (`configs/allex.yaml`). See [Target robot](#-target-robot) for
-adding a custom robot.
+Every stage accepts those three flags. The retargeting, overlay and LeRobot conversion stages
+additionally accept `--robot_name`, which defaults to `allex` (`configs/allex.yaml`). See
+[Target robot](#-target-robot) for adding a custom robot.
 
 > [!NOTE]
-> **The released pipeline code estimates all annotations from the video itself.** Camera
-> geometry, hand poses and language that a source dataset already provides are not used at any
-> stage. To start at stage N with them instead, write what stage N-1 would write in the format
-> that [`examples/README.md`](examples/README.md) documents, with the `.done` markers included.
+> **The released code does not read annotations that a source dataset provides.** It estimates
+> the camera geometry, hand poses and language from the video itself. To start at stage N with
+> provided annotations, write what stage N-1 would write in the format that
+> [`examples/README.md`](examples/README.md) documents, with the `.done` markers included.
 > Without the markers, a stage can treat a clip as dropped.
 
 ## 🎬 Input video
@@ -148,9 +148,8 @@ change. The annotations before the retargeting do not depend on the robot either
 
 ## 📊 Data format
 
-A run writes two outputs. The per-segment **Parquet tables** carry the annotations, and the
-**LeRobot V2.0 dataset** holds the robotized episodes. See
-[`examples/README.md`](examples/README.md) for both formats in full.
+The **Parquet tables** carry the annotations, and the **LeRobot V2.0 dataset** holds the
+robotized episodes. See [`examples/README.md`](examples/README.md) for both formats in full.
 
 Two reader scripts come with them, one per format, and each is the reference implementation for
 its own format. Run them on the outputs of the example clips:

@@ -9,50 +9,50 @@ V2.0 dataset** for policy training.
 
 ### Where they are written
 
-Stage 1 writes one JSON of intrinsics per clip under `<clips>_intr`. Stages 2 to 6 write
+Stage 1 writes one JSON of intrinsics per clip under `<clips>_intr`. Stages 2 to 5 write
 each clip as shards, `{clip_id}_NN.parquet`, in one directory per stage: `<clips>_contact`,
-`_contact_refined`, `_hand`, `_extr` and `_arm`. Stage 7 splits each clip into segments,
-and from then on each segment has its own files under `<clips>_chunked`, with one `<robot>`
-tree per target robot:
+`_contact_refined`, `_hand` and `_extr`. Stage 6 cuts manipulation segments out of each
+clip. From then on each segment has its own files under `<clips>_chunked`, with one
+`<robot>` tree per target robot:
 
 ```
 <clips>_chunked/
-  original/video/<clip_id>/<start>_<end>.mp4            stage 7   the segment's frames
-  original/video/<clip_id>/<start>_<end>_inpainted.mp4  stage 8   the same frames, arms removed
-  original/annot/<clip_id>/<start>_<end>.parquet        stage 7   the human annotations
-  <robot>/annot/<clip_id>/<start>_<end>.parquet         stage 9   the robot trajectory
-  <robot>/overlay/video/<clip_id>/<start>_<end>.mp4     stage 10  the rendered robot
-  <robot>/overlay/annot/<clip_id>/<start>_<end>.parquet stage 10  stage 9's table + a render flag
+  original/video/<clip_id>/<start>_<end>.mp4            stage 6   the segment's frames
+  original/video/<clip_id>/<start>_<end>_inpainted.mp4  stage 7   the same frames, arms removed
+  original/annot/<clip_id>/<start>_<end>_narr.parquet   stage 6   the human annotations
+  original/annot/<clip_id>/<start>_<end>.parquet        stage 7   the same table + the arm masks
+  <robot>/annot/<clip_id>/<start>_<end>.parquet         stage 8   the robot trajectory
+  <robot>/overlay/video/<clip_id>/<start>_<end>.mp4     stage 9   the rendered robot
+  <robot>/overlay/annot/<clip_id>/<start>_<end>.parquet stage 9   stage 8's table + a render flag
 ```
 
-`<start>` and `<end>` are inclusive frame indices in the clip. Stages 2 to 10 also write a
-`.done` marker beside a clip's files once it is finished, and a rerun of a stage skips every
-clip it has marked. A dropped clip, such as one without a detected hand, gets a
-marker but no output.
+`<start>` and `<end>` are inclusive frame indices in the clip. Stages 2 to 9 write a `.done`
+marker per finished clip. A rerun skips the marked clips. A dropped clip, such as one without a
+detected hand, gets a marker but no output.
 
 ### The columns
 
 Every table uses the one schema in [`common/io.py`](../common/io.py). Each row is one video
-frame. A stage fills the columns it computes and leaves the rest null. The pose columns use the
-axes and units that [Coordinate frames](#coordinate-frames) defines. Every annotation from stage 2
-on is made on the undistorted frames, not on the raw video.
+frame. The pose columns use the axes and units that [Coordinate frames](#coordinate-frames)
+defines. Annotations from stage 2 on are made on the undistorted frames.
 
 | column | type | stage |
 |---|---|---|
 | `clip_id` | string | 2 |
-| `frame_id` | int32, restarts at 0 in each segment | 2 |
+| `frame_id` | int32, the clip's frame index, restarted at 0 per segment by stage 6 | 2 |
 | `height`, `width` | int32, the input video's resolution | 2 |
 | `intr_model` | string, `droidcalib` or `anycalib` (fallback), the method stage 1 used | 2 |
 | `fx`, `fy`, `cx`, `cy`, `xi` | float64, stage 1's raw intrinsics | 2 |
+| `pinhole_*` | float64, `fx`, `fy`, `cx`, `cy` of the undistorted frames | 2 |
 | `hands` | list of the per-hand struct below | 2 |
 | `cam_pose` | 4x4 cam-to-world, OpenCV, metric-scaled and gravity-aligned | 5 |
-| `arm_mask` | bit-packed (H,W) bool | 6 |
-| `n_person_det` | int32, the number of people the detector found | 6 |
-| `narr` | struct of `think`, `left`, `right`, `bimanual` | 7 |
-| `language` | string, `narr` merged to one instruction | 7 |
-| `cam_pose_base` | 4x4 cam-to-robot-base, OpenCV | 9 |
-| `state_qpos` | float32, the robot's joint angles, ordered by `state_qpos_joint_names` below | 9 |
-| `state_eef_left`, `state_eef_right` | float32, wrist position (3) + first two rows of its rotation matrix (6) + hand joint angles | 9 |
+| `arm_mask` | bit-packed (H,W) bool | 7 |
+| `n_person_det` | int32, the number of people detected, only on sampled frames | 6 |
+| `narr` | struct of `think`, `left`, `right`, `bimanual` | 6 |
+| `language` | string, `narr` merged to one instruction | 6 |
+| `cam_pose_base` | 4x4 cam-to-robot-base, OpenCV | 8 |
+| `state_qpos` | float32, the robot's joint angles, ordered by `state_qpos_joint_names` below | 8 |
+| `state_eef_left`, `state_eef_right` | float32, wrist position (3) + first two rows of its rotation matrix (6) + hand joint angles | 8 |
 
 The `hands` struct, one entry per detected hand:
 
@@ -61,28 +61,27 @@ The `hands` struct, one entry per detected hand:
 | `box` | float32[4], `[x1,y1,x2,y2]` | 2 |
 | `conf` | float32, detector confidence | 2 |
 | `side` | int8, 0 left and 1 right | 2, rewritten by 3 |
-| `side_conf` | float32 | 2 |
-| `kpts3d` | float32[21,3], MediaPipe order, camera frame | 4 |
+| `side_conf` | float32 | 2, rewritten by 3 |
+| `kpts3d` | float32[21,3], MediaPipe order, camera coordinate frame | 4 |
 | `wrist_rot` | float32[3], axis-angle | 4 |
 | `finger_rot` | float32[15,3], axis-angle | 4 |
 | `hand_mask` | bit-packed (H,W) bool | 4, set to null by 6 |
 
-Stages 9 and 10 also write the diagnostic columns below. Stage 11 reads only the `err_*`
-columns, to filter episodes, and none of these columns enters the LeRobot dataset:
+Stages 8 and 9 also write the diagnostic columns below. None of them enters the LeRobot dataset:
 
 | column | type | stage |
 |---|---|---|
-| `state_mask_left`, `state_mask_right` | bool, false where that side's hand is missing. The IK fits no hand there, so the state follows from the frames around it, or is the neutral pose if the hand never appears in the segment | 9 |
-| `retarget_cost` | float32, the segment's solver cost divided by its frame count, written on every row | 9 |
-| `err_tip_mm_*`, `err_palm_mm_*`, `err_local_dir_*` | per-side IK residuals | 9 |
-| `err_ddq` | float32, per-joint second difference | 9 |
-| `err_cam_pos_mm`, `err_cam_rot_deg` | how far the solved camera sits from stage 5's | 9 |
-| `overlay_valid` | bool, false where Isaac Sim failed to render the frame | 10 |
+| `state_mask_left`, `state_mask_right` | bool, false where the IK has no target for that side's hand. The state there follows from the frames around it, or is the neutral pose if that side has no target in the whole segment | 8 |
+| `retarget_cost` | float32, the segment's solver cost divided by its frame count, written on every row | 8 |
+| `err_tip_mm_*`, `err_palm_mm_*`, `err_local_dir_*` | per-side IK residuals | 8 |
+| `err_ddq` | float32, per-joint second difference | 8 |
+| `err_cam_pos_mm`, `err_cam_rot_deg` | how far the solved camera sits from stage 5's | 8 |
+| `overlay_valid` | bool, false where Isaac Sim failed to render the frame | 9 |
 
 ### The robot metadata
 
-From stage 9 on each table carries schema metadata, `pq.read_table(...).schema.metadata`, so it
-can be read without the robot's config:
+From stage 8 on, each table carries schema metadata, `pq.read_table(...).schema.metadata`, which
+names the robot and its joints, so the table can be read without the robot's config:
 
 | key | holds |
 |---|---|
@@ -113,7 +112,7 @@ The robot's wrist poses and camera pose, `state_eef_*` and `cam_pose_base` in th
 given in the robot base frame, whose axes are x forward, y left and z up. The camera's own axes
 are **OpenCV: +x right, +y down, +z forward**.
 
-Each wrist rotation is given in the MANO wrist frame, which comes from the hand's own anatomy:
+Each wrist rotation is the orientation of the MANO wrist frame, which follows the hand's anatomy:
 
 ```
 along   = wrist            -> middle-finger MCP      (down the hand)
@@ -130,15 +129,15 @@ normal  = along x across                             (palmar on a left hand, dor
 The wrist position, `state_eef_*[0:3]`, is the origin of the robot's wrist link. For Allex it is
 the wrist pitch joint.
 [`configs/README.md`](../configs/README.md#the-mano-wrist-frames--eef_link_names) draws these
-frames on a person's hands and on Allex's hands, and `configs/check_frames.py` checks a robot's
+axes on a person's hands and on Allex's hands, and `configs/check_frames.py` checks a robot's
 wrist link against them.
 
 ## The LeRobot dataset
 
-Stage 11 turns each segment of the stage-10 tables into one episode, and drops the segments that
-fail its checks. It writes the dataset under `<clips>_lerobot/<robot>/<HxW>/`. A LeRobot dataset
-holds videos of a single resolution, so clips of different aspect ratios end up in separate
-datasets. For Allex an episode holds:
+Stage 10 turns each segment of stage 9's tables into one episode of a LeRobot dataset. It
+writes the dataset under `<clips>_lerobot/<robot>/<HxW>/`. A LeRobot dataset holds videos of
+a single resolution, so clips of different aspect ratios end up in separate datasets. For
+Allex an episode holds:
 
 | feature | dim | from the tables |
 |---|---|---|
@@ -154,10 +153,10 @@ datasets. For Allex an episode holds:
 and all four carry motion.
 
 > [!WARNING]
-> **Stage 11 deliberately writes no `meta/stats.json`**, the standard LeRobot file of
+> **Stage 10 deliberately writes no `meta/stats.json`**, the standard LeRobot file of
 > normalisation statistics. Their values depend on the training setup, such as the datasets and
-> resolutions merged into one corpus and the normalisation the trainer applies. Fill it in before
-> training, following the format of a V2.0 dataset such as
+> resolutions merged into one corpus and the trainer's normalisation. Fill it in before training,
+> following the format of a V2.0 dataset such as
 > [`lerobot/pusht`](https://huggingface.co/datasets/lerobot/pusht/blob/v2.0/meta/stats.json).
 
 `examples/load_lerobot.py` reads a dataset as a PyTorch `Dataset` and prints its layout:
