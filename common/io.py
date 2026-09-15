@@ -1,7 +1,9 @@
 """Shared Parquet I/O: ONE cumulative SCHEMA for every pipeline stage.
-Stages 2 to 6 write chunked shards (`{clip_id}_{NN}.parquet` + an atomic `{clip_id}.done`),
+Stages 2 to 5 write chunked shards (`{clip_id}_{NN}.parquet` + an atomic `{clip_id}.done`),
 filling only the fields they compute and leaving the rest None."""
+import glob
 import os
+import re
 import struct
 from pathlib import Path
 import numpy as np
@@ -15,6 +17,7 @@ _DICT_ENCODE = {
     "clip_id": True, "height": True, "width": True, "intr_model": True,
     "hands.item.side": True,
     "fx": True, "fy": True, "cx": True, "cy": True, "xi": True,
+    "pinhole_fx": True, "pinhole_fy": True, "pinhole_cx": True, "pinhole_cy": True,
     "n_person_det": True,
 }
 
@@ -71,7 +74,7 @@ def decode_mask_bytes(b):
 _KPTS3D_TYPE = _fixed_list(_fixed_list(_F32, 3), 21)      # (21, 3)
 _WRIST_ROT_TYPE = _fixed_list(_F32, 3)                    # axis-angle (3,)
 _FINGER_ROT_TYPE = _fixed_list(_fixed_list(_F32, 3), 15)  # (15, 3) axis-angles
-_EXTR_TYPE = pa.list_(pa.list_(_F32))                     # 4x4 T_cam2world (or None)
+_EXTR_TYPE = pa.list_(pa.list_(_F32))                     # 4x4 pose (or None)
 
 HAND_ITEM = pa.struct([
     ("box",   _fixed_list(_F32, 4)),   # [x1,y1,x2,y2]
@@ -96,19 +99,21 @@ SCHEMA = pa.schema([
     ("width",   pa.int32()),
     ("intr_model", pa.string()),
     ("hands",   pa.list_(HAND_ITEM)),
-    ("fx", pa.float64()), ("fy", pa.float64()),
+    ("fx", pa.float64()), ("fy", pa.float64()),      # stage 1's raw camera model (MEI/UCM)
     ("cx", pa.float64()), ("cy", pa.float64()), ("xi", pa.float64()),
+    ("pinhole_fx", pa.float64()), ("pinhole_fy", pa.float64()),  # undistorted frames' pinhole
+    ("pinhole_cx", pa.float64()), ("pinhole_cy", pa.float64()),
     ("cam_pose", _EXTR_TYPE),        # 4x4 cam-to-world, OpenCV (stage 5)
-    ("cam_pose_base", _EXTR_TYPE),   # 4x4 cam-to-robot-base, OpenCV (stage 9)
+    ("cam_pose_base", _EXTR_TYPE),   # 4x4 cam-to-robot-base, OpenCV (stage 8)
     ("arm_mask", pa.binary()),
     ("n_person_det", pa.int32()),
     ("narr", NARR_TYPE),
     ("language", pa.string()),   # narr merged down to one instruction, see merge_narration
     # Retargeting output. List widths are recorded in schema metadata.
-    # state_mask_* is false where that side's hand is missing. The IK
-    # solves those frames with no hand target, so their state follows
-    # from the frames around them. A side missing from the whole
-    # segment is held at the home pose.
+    # state_mask_* is false where that side's hand or the camera pose is
+    # missing. The IK solves those frames with no hand target, so their
+    # state follows from the frames around them. A side missing from the
+    # whole segment is held at the home pose.
     ("state_qpos", pa.list_(_F32)),        # active joint angles, config group order
     ("state_eef_left", pa.list_(_F32)),    # wrist pos3 + rot6d6 + hand joints, base frame
     ("state_eef_right", pa.list_(_F32)),
@@ -230,11 +235,8 @@ def decode_row(row):
     return row
 
 
-def rows_to_parquet(rows, out_path, metadata=None):
-    """Write rows as one Parquet shard. `metadata` attaches schema-level key/value strings."""
-    schema = SCHEMA if metadata is None else SCHEMA.with_metadata(metadata)
-    table = pa.Table.from_pylist(normalize_rows(rows), schema=schema)
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+def write_table(table, out_path):
+    """Write a SCHEMA table with the Parquet options every stage uses."""
     pq.write_table(table, out_path,
         compression="zstd",
         compression_level=1,  # avoids a CPU peak
@@ -243,9 +245,73 @@ def rows_to_parquet(rows, out_path, metadata=None):
     )
 
 
+def atomic_path(path):
+    """A name beside `path` that no stage lists, unique to this process."""
+    return f"{path}.tmp{os.getpid()}"
+
+
+def pid_alive(pid):
+    """False only when no process has this pid."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (OSError, OverflowError):  # another user's process, or not a valid pid
+        return True
+    return True
+
+
+_TEMP_NAME = re.compile(r".*\.tmp(\d+)")
+
+
+def remove_stale_temps(directory):
+    """Delete the temp files (`*.tmp<pid>`) in `directory` whose process has exited.
+    Subdirectories are not searched. A missing directory is left alone."""
+    if not os.path.isdir(directory):
+        return
+    for name in os.listdir(directory):
+        m = _TEMP_NAME.fullmatch(name)
+        path = os.path.join(directory, name)
+        if m and os.path.isfile(path) and not pid_alive(int(m.group(1))):
+            try:
+                os.remove(path)
+            except FileNotFoundError:  # another process removed it first
+                pass
+
+
+def rows_to_parquet(rows, out_path, metadata=None):
+    """Write rows as one Parquet shard, through a temp name and a rename.
+    `metadata` attaches schema-level key/value strings."""
+    for r in rows:
+        for h in (r.get("hands") or []):
+            if h is not None and h.get("box") is None:
+                raise ValueError(
+                    f"{out_path}: frame {r.get('frame_id')} has a hand with no box. "
+                    "pyarrow cannot read back a null hands[].box, so every hand needs [x1, y1, x2, y2]."
+                )
+    schema = SCHEMA if metadata is None else SCHEMA.with_metadata(metadata)
+    table = pa.Table.from_pylist(normalize_rows(rows), schema=schema)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    tmp_path = atomic_path(out_path)
+    write_table(table, tmp_path)
+    os.replace(tmp_path, out_path)
+
+
 def write_clip_chunks(clip_id, rows, out_dir, chunk_idx):
     if not rows: return
     rows_to_parquet(rows, os.path.join(out_dir, f"{clip_id}_{chunk_idx:02d}.parquet"))
+
+
+def remove_clip_shards(out_dir, clip_id):
+    """Delete the clip's `{clip_id}_NN.parquet` shards and their temps in `out_dir`.
+    `{clip_id}.done` and the shards of other clips are left alone."""
+    if not os.path.isdir(out_dir):
+        return
+    # `{clip_id}_NN.parquet` only: another clip's id can start with `{clip_id}_`
+    shard = re.compile(rf"{re.escape(clip_id)}_\d+\.parquet(\.tmp\d+)?")
+    for name in os.listdir(out_dir):
+        if shard.fullmatch(name):
+            os.remove(os.path.join(out_dir, name))
 
 
 def mark_done(output_dir, clip_id):
@@ -267,7 +333,9 @@ class ParquetReader:
         self._decode = decode
         self._read_cols = None if self.cols is None else sorted(set(self.cols + ["frame_id"]))
 
-        files = sorted(self.root.glob(f"{clip_id}_*.parquet"))  # 2-digit names sort correctly
+        # `{clip_id}_NN.parquet` only: another clip's id can start with `{clip_id}_`
+        shard = re.compile(rf"{re.escape(clip_id)}_\d+\.parquet")
+        files = sorted(p for p in self.root.glob(f"{glob.escape(clip_id)}_*.parquet") if shard.fullmatch(p.name))
         done_path = self.root / f"{clip_id}.done"
         if not files or not done_path.is_file():
             raise FileNotFoundError(

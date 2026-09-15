@@ -127,7 +127,7 @@ home_config:
   L_Wrist_Yaw_Joint: -1.7
   R_Wrist_Yaw_Joint: 1.7
 
-# Overlay rendering (stage 10, Isaac Sim)
+# Overlay rendering (stage 9, Isaac Sim)
 overlay:
   # Mimic joints must be driven explicitly under PhysX. The multipliers are the URDF's own.
   mimic_joints:

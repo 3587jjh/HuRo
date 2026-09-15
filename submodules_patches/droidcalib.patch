@@ -181,19 +181,21 @@ index 5cb18d9..c0171c7 100644
 +                if custom: return False
 \ No newline at end of file
 diff --git a/setup.py b/setup.py
-index 9af97d4..8f00220 100644
+index 9af97d4..5ecc13f 100644
 --- a/setup.py
 +++ b/setup.py
-@@ -24,6 +24,8 @@ setup(
+@@ -24,6 +24,10 @@ setup(
                      '-gencode=arch=compute_75,code=sm_75',
                      '-gencode=arch=compute_80,code=sm_80',
                      '-gencode=arch=compute_86,code=sm_86',
 +                    '-gencode=arch=compute_89,code=sm_89',
 +                    '-gencode=arch=compute_90,code=sm_90',
++                    '-gencode=arch=compute_100,code=sm_100',
++                    '-gencode=arch=compute_120,code=sm_120',
                  ]
              }),
      ],
-@@ -53,7 +55,9 @@ setup(
+@@ -53,7 +57,11 @@ setup(
                      '-gencode=arch=compute_70,code=sm_70', 
                      '-gencode=arch=compute_75,code=sm_75',
                      '-gencode=arch=compute_80,code=sm_80',
@@ -201,6 +203,8 @@ index 9af97d4..8f00220 100644
 +                    '-gencode=arch=compute_86,code=sm_86',
 +                    '-gencode=arch=compute_89,code=sm_89',
 +                    '-gencode=arch=compute_90,code=sm_90',
++                    '-gencode=arch=compute_100,code=sm_100',
++                    '-gencode=arch=compute_120,code=sm_120',
                  ]
              }),
      ],

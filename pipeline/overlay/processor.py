@@ -54,7 +54,7 @@ class RobotOverlayProcessor:
         logger.info("Robot overlay processor initialized")
     
     def update_camera_and_resolution(self, camera_params: CameraParams, width: int, height: int):
-        """Update camera and resolution between clips (only the render product is recreated)."""
+        """Update camera and resolution between clips (only the render product is resized)."""
         self.camera_params = camera_params
         self.renderer.update_resolution(width, height)
         self.renderer.update_camera_pose(camera_params, update_intrinsics=True)
@@ -74,7 +74,7 @@ class RobotOverlayProcessor:
         progress_cb: Optional[Callable[[int], None]] = None,
     ) -> List[np.ndarray]:
         """Overlay the robot onto each frame and return the composited RGB frames.
-        frames: RGB uint8, robot_trajectories: [T, num_dof], camera_poses: [T, 4, 4]."""
+        frames: RGB uint8, robot_trajectories: [T, input DOFs], camera_poses: [T, 4, 4]."""
         num_frames = min(len(frames), len(robot_trajectories))
         overlay_frames = []
 

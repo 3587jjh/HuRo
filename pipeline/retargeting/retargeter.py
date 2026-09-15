@@ -1,7 +1,8 @@
 """Bimanual retargeting of human hand keypoints onto a robot, via PyRoKi.
 
-Stage 1 solves a 4-DOF world offset [tx, ty, tz, yaw] on representative frames. Stage 2 freezes
-it and solves joints over the whole segment. Both stages pad to fixed shapes (one JIT each).
+The offset solve fits a 4-DOF world offset [tx, ty, tz, yaw] on representative frames.
+The trajectory solve freezes that offset and solves joints over the whole segment. Both
+solves pad to fixed shapes.
 """
 # create_conn_tree, RetargetingWeights and the alignment costs are adapted from PyRoKi's
 # examples, MIT License, Copyright (c) 2025 Chung Min Kim.
@@ -20,7 +21,7 @@ from loguru import logger
 # MediaPipe 21-point hand: fingertip indices (0 = wrist, 4 keypoints per finger)
 GLOBAL_TIP_INDICES = [4, 8, 12, 16, 20]
 
-# Stage-1 frame count: sequences are subsampled/padded to this (single JIT shape)
+# Offset-solve frame count: sequences are subsampled/padded to this (single JIT shape)
 N_REPRESENTATIVE = 32
 
 
@@ -43,8 +44,8 @@ DEFAULT_WEIGHTS = RetargetingWeights(
     global_alignment=50.0,
     joint_smoothness=40.0,
     hand_smoothness_scale=0.25,
-    ego_view_rot=10.0,
-    ego_view_pos=3.0,
+    ego_view_rot=3.0,
+    ego_view_pos=10.0,
     rest_weight_default=0.2,
     rest_weight_stiff=1.2,
     hand_rest_scale=0.50,
@@ -53,6 +54,11 @@ DEFAULT_WEIGHTS = RetargetingWeights(
 
 # Locked joints are pinned to the home pose with a weight above every other residual.
 LOCKED_REST_WEIGHT = 200.0
+
+# jaxls's parameter-tolerance stop compares the step with the norm of all variables, padded
+# frames included. A long padding inflates that norm and ends the trajectory solve early, so pads
+# longer than this run without that stop.
+PARAMETER_TOLERANCE_MAX_PAD = 224
 
 
 def sample_representative_frames(
@@ -159,7 +165,7 @@ def solve_offset_and_joints(
     target_cam_se3_world: jaxlie.SE3,
     cam_mask: jnp.ndarray,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """Stage 1: jointly optimize the 4-DOF offset and coarse joints on representative frames.
+    """Offset solve: jointly optimize the 4-DOF offset and coarse joints on representative frames.
     Targets are in WORLD frame. Padded frames carry mask 0. Only the offset is used downstream."""
     timesteps = local_keypoints_world.shape[0]
     n_local = local_keypoints_world.shape[1]
@@ -235,10 +241,11 @@ def solve_offset_and_joints(
         T_cam_actual = jaxlie.SE3(T_root_link.wxyz_xyz[camera_link_index])
 
         target_base = T_base_world @ target_cam_w
+        # SE3.log() is [translation (3), rotation (3)]
         err_log = (target_base.inverse() @ T_cam_actual).log()
-        rot_res = err_log[:3] * weight_cam_rot
-        pos_res = err_log[3:] * weight_cam_pos
-        return jnp.concatenate([rot_res, pos_res]) * c_mask
+        pos_res = err_log[:3] * weight_cam_pos
+        rot_res = err_log[3:] * weight_cam_rot
+        return jnp.concatenate([pos_res, rot_res]) * c_mask
 
     @jaxls.Cost.factory
     def joint_limit_cost(
@@ -262,7 +269,7 @@ def solve_offset_and_joints(
         joint_limit_cost(var_joints),
     ]
 
-    # No temporal smoothness: stage 1 runs on a subsampled frame set
+    # No temporal smoothness: the offset solve runs on a subsampled frame set
     locked_mask = (1 - joint_mask).astype(bool)
     costs.append(pk.costs.rest_cost(
         var_joints, rest_pose=initial_cfg[None],
@@ -316,7 +323,7 @@ def solve_retargeting(
 
     hand_joint_mask: jnp.ndarray,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """Stage 2: joint-only solve with the offset frozen. All targets are in base frame."""
+    """Trajectory solve: joints only, with the offset frozen. All targets are in base frame."""
     timesteps = local_keypoints.shape[0]
     n_local = local_keypoints.shape[1]
 
@@ -348,7 +355,7 @@ def solve_retargeting(
         delta_target = keypoints[:, None] - keypoints[None, :]
         delta_robot = robot_pos[:, None] - robot_pos[None, :]
 
-        # Epsilon on the vector, not the norm. See the stage-1 cost.
+        # Epsilon on the vector, not the norm. See the offset-solve cost.
         delta_target_n = delta_target / jnp.linalg.norm(
             delta_target + 1e-6, axis=-1, keepdims=True)
         delta_robot_n = delta_robot / jnp.linalg.norm(
@@ -385,10 +392,11 @@ def solve_retargeting(
         T_root_link = jaxlie.SE3(robot.forward_kinematics(cfg=cfg_eff))
         T_cam_actual = jaxlie.SE3(T_root_link.wxyz_xyz[camera_link_index])
 
+        # SE3.log() is [translation (3), rotation (3)]
         err_log = (target_se3.inverse() @ T_cam_actual).log()
-        rot_res = err_log[:3] * weight_cam_rot
-        pos_res = err_log[3:] * weight_cam_pos
-        return jnp.concatenate([rot_res, pos_res]) * c_mask
+        pos_res = err_log[:3] * weight_cam_pos
+        rot_res = err_log[3:] * weight_cam_rot
+        return jnp.concatenate([pos_res, rot_res]) * c_mask
 
     @jaxls.Cost.factory
     def joint_limit_cost(
@@ -447,7 +455,8 @@ def solve_retargeting(
         .solve(
             trust_region=jaxls.TrustRegionConfig(lambda_initial=10.0),
             termination=jaxls.TerminationConfig(
-                max_iterations=1000, early_termination=True),
+                max_iterations=1000, early_termination=True,
+                parameter_tolerance=1e-6 if timesteps <= PARAMETER_TOLERANCE_MAX_PAD else 0.0),
             initial_vals=jaxls.VarValues.make([
                 var_joints.with_value(init_guess),
             ]),
@@ -467,7 +476,7 @@ class Retargeter:
 
     def __init__(self, robot_cfg):
         self.config = robot_cfg.config
-        logger.disable("jaxls")   # the solver logs one line per iteration otherwise
+        logger.disable("jaxls")
 
         urdf_path = Path(robot_cfg.urdf_path)
 
@@ -499,17 +508,17 @@ class Retargeter:
             idx = actuated_names.index(name)
             self.joint_mask[idx] = 1.0
             active_joint_indices.append(idx)
-        self.active_joint_indices = np.array(active_joint_indices)
+        self.active_joint_indices = np.array(active_joint_indices, dtype=np.int64)
 
         stiff_joint_names = []
-        for group_name in self.config.get("stiff_groups", []):
+        for group_name in self.config.get("stiff_groups") or []:
             stiff_joint_names.extend(self.joint_groups.get(group_name, []))
         self.stiff_joint_indices = np.array([
             actuated_names.index(n) for n in stiff_joint_names if n in actuated_names
-        ])
+        ], dtype=np.int64)
 
         self.hand_joint_mask = np.zeros(n_actuated, dtype=np.float32)
-        for group_name in self.config.get("hand_groups", []):
+        for group_name in self.config.get("hand_groups") or []:
             for name in self.joint_groups.get(group_name, []):
                 if name in actuated_names:
                     self.hand_joint_mask[actuated_names.index(name)] = 1.0
@@ -538,10 +547,10 @@ class Retargeter:
                     global_kpt.append(kpt_idx)
                     global_link.append(lidx)
 
-            setattr(self, f"{side}_local_kpt_indices", np.array(local_kpt))
-            setattr(self, f"{side}_local_link_indices", np.array(local_link))
-            setattr(self, f"{side}_global_kpt_indices", np.array(global_kpt))
-            setattr(self, f"{side}_global_link_indices", np.array(global_link))
+            setattr(self, f"{side}_local_kpt_indices", np.array(local_kpt, dtype=np.int64))
+            setattr(self, f"{side}_local_link_indices", np.array(local_link, dtype=np.int64))
+            setattr(self, f"{side}_global_kpt_indices", np.array(global_kpt, dtype=np.int64))
+            setattr(self, f"{side}_global_link_indices", np.array(global_link, dtype=np.int64))
 
         for side in ("left", "right"):
             n_tips = len(getattr(self, f"{side}_global_kpt_indices"))
@@ -567,9 +576,11 @@ class Retargeter:
         # Hand joint positions within the active state vector (config-driven EEF layout)
         hand_groups = self.config["eef_hand_joint_groups"]
         self.left_hand_active_indices = np.array([
-            self.active_joint_names.index(n) for n in self.joint_groups[hand_groups["left"]]])
+            self.active_joint_names.index(n) for n in self.joint_groups[hand_groups["left"]]],
+            dtype=np.int64)
         self.right_hand_active_indices = np.array([
-            self.active_joint_names.index(n) for n in self.joint_groups[hand_groups["right"]]])
+            self.active_joint_names.index(n) for n in self.joint_groups[hand_groups["right"]]],
+            dtype=np.int64)
         self.eef_dim = (9 + len(self.left_hand_active_indices)) + \
                        (9 + len(self.right_hand_active_indices))
 
@@ -577,7 +588,7 @@ class Retargeter:
         """Home configuration over the URDF's actuated joints (unlisted joints are 0)."""
         actuated_names = list(self.robot.joints.actuated_names)
         cfg = np.zeros(len(actuated_names), dtype=np.float32)
-        for name, val in self.config.get("home_config", {}).items():
+        for name, val in (self.config.get("home_config") or {}).items():
             if name in actuated_names:
                 cfg[actuated_names.index(name)] = val
         return cfg
@@ -593,7 +604,7 @@ class Retargeter:
         initial_offset_4dof: np.ndarray,
         max_seq_len: int = 224,
     ) -> Tuple[np.ndarray, np.ndarray, float]:
-        """Run both stages and return (joints (T, N_actuated), offset (4,), stage-2 cost).
+        """Run both solves and return joints (T, N_actuated), offset (4,) and the trajectory cost.
         kpts: (T, 21, 3) world-frame. Cam poses: (T, 4, 4) OpenCV cam-to-world. T <= max_seq_len."""
         T = left_kpts_world.shape[0]
         assert left_kpts_world.shape == (T, 21, 3)
@@ -638,7 +649,7 @@ class Retargeter:
         target_cam_se3_world = jaxlie.SE3.from_matrix(
             jnp.array(target_cam_poses_world, dtype=jnp.float32))
 
-        # ---- Stage 1: offset on representative frames, padded to N_REPRESENTATIVE ----
+        # ---- Offset solve: offset on representative frames, padded to N_REPRESENTATIVE ----
         rep_indices = sample_representative_frames(
             local_kpt_mask, cam_valid, n_target=N_REPRESENTATIVE)
         n_rep = len(rep_indices)
@@ -683,7 +694,7 @@ class Retargeter:
         optimized_offset_4dof = np.array(optimized_offset)
         T_base_world_se3 = offset_4dof_to_se3(optimized_offset)
 
-        # ---- Stage 2: targets into base frame, then joint-only solve padded to max_seq_len ----
+        # ---- Trajectory solve: targets into base frame, then joints padded to max_seq_len ----
         local_kpts_base = np.array(T_base_world_se3.apply(
             jnp.array(local_kpts_world, dtype=jnp.float32)))
         global_kpts_base = np.array(T_base_world_se3.apply(
@@ -742,7 +753,8 @@ class Retargeter:
         """(..., N_actuated) -> (..., N_active) in the config's group order."""
         actuated_names = list(self.robot.joints.actuated_names)
         indices = np.array([
-            actuated_names.index(n) for n in self.active_joint_names if n in actuated_names])
+            actuated_names.index(n) for n in self.active_joint_names if n in actuated_names],
+            dtype=np.int64)
         return full_cfg[..., indices]
 
     def inject_active_joints(self, state: np.ndarray) -> np.ndarray:

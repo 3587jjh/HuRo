@@ -1,9 +1,9 @@
-# Stage 11 — LeRobot conversion: one episode per segment, grouped by output resolution under
-# {output}/{HxW}/. Reads stage 10's overlay/{annot,video} tree. Writes episode parquets,
+# Stage 10: LeRobot conversion. One episode per segment, grouped by output resolution under
+# {output}/{HxW}/. Reads stage 9's overlay/{annot,video} tree. Writes episode parquets,
 # resized videos and meta/ files. No meta/stats.json: normalisation statistics belong to
 # the training corpus, not to one conversion run.
 #
-#   python pipeline/stage11_lerobot_convert.py \
+#   python pipeline/stage10_lerobot_convert.py \
 #       --input_dir /path/to/clips --part 1/1 --no_tqdm
 import argparse
 import hashlib
@@ -161,7 +161,8 @@ def _compute_diag_means(table: pa.Table) -> dict:
             vals = np.array([v.as_py() for v in table.column(col)], dtype=np.float32)
         else:
             vals = _col_to_np(table, col, dtype=np.float32)
-        diag[col] = float(np.nanmean(vals))
+        # A hand absent from the whole segment has NaN errors on every row
+        diag[col] = float(np.nanmean(vals)) if not np.isnan(vals).all() else float("nan")
 
     return diag
 
@@ -267,13 +268,14 @@ _LEROBOT_TARGETS = {
 # ---------------------------------------------------------------------------
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Convert stage 10 overlay output to LeRobot V2.0 datasets")
+    p = argparse.ArgumentParser(description="Convert stage 9 overlay output to LeRobot V2.0 datasets")
     p.add_argument("--robot_name", default="allex",
                    help="Robot config name (configs/<robot_name>.yaml)")
-    p.add_argument("--input_dir", required=True, help="Root clip directory")
+    p.add_argument("--input_dir", required=True, help="Root clip directory, or one .mp4 clip")
     p.add_argument("--output_dir", default=None,
                    help="LeRobot dataset output path. If omitted, auto-derived as "
-                        "{input_dir}_lerobot/{robot_name}")
+                        "{input_dir}_lerobot/{robot_name}, or <clip dir>/lerobot/{robot_name} "
+                        "for one .mp4 clip")
     p.add_argument("--no_tqdm", action="store_true")
     p.add_argument("--fps", type=int, default=30)
     p.add_argument("--shorter_side", type=int, default=192,
@@ -310,11 +312,17 @@ class SegmentInfo:
 
 
 def discover_segments(overlay_root: Path) -> list:
-    """Enumerate stage 10 segments: annot/{clip_id}/{seg}.parquet + video/{clip_id}/{seg}.mp4."""
+    """Enumerate stage 9 segments: annot/{clip_id}/{seg}.parquet + video/{clip_id}/{seg}.mp4."""
     annot_root = overlay_root / "annot"
     video_root = overlay_root / "video"
     assert annot_root.exists(), f"Annotation root not found: {annot_root}"
     assert video_root.exists(), f"Video root not found: {video_root}"
+
+    for clip_dir in sorted(p for p in annot_root.glob("*") if p.is_dir()):
+        done = annot_root / f"{clip_dir.name}.done"
+        if not done.exists():
+            raise RuntimeError(f"{clip_dir} exists but {done} does not: stage 9 has not finished "
+                               f"this clip, or its marker is missing")
 
     parquet_paths = sorted(annot_root.glob("*/*.parquet"))
 
@@ -331,6 +339,11 @@ def discover_segments(overlay_root: Path) -> list:
 
     if skipped_no_video:
         print(f"  Warning: skipped {skipped_no_video} segments with missing video "
+              f"(annot: {annot_root}, video: {video_root})")
+    table_keys = {(p.parent.name, p.stem) for p in parquet_paths}
+    skipped_no_annot = sum(1 for v in video_root.glob("*/*.mp4") if (v.parent.name, v.stem) not in table_keys)
+    if skipped_no_annot:
+        print(f"  Warning: skipped {skipped_no_annot} segments with missing parquet "
               f"(annot: {annot_root}, video: {video_root})")
 
     return segments
@@ -386,6 +399,8 @@ def build_episodes(segments: list, shorter_side: int,
 
     episodes = []
     skipped_corrupt = 0
+    skipped_no_language = 0
+    skipped_no_robot = 0
     for seg in iterator:
         try:
             pf = pq.ParquetFile(seg.parquet_path)
@@ -393,7 +408,9 @@ def build_episodes(segments: list, shorter_side: int,
 
             # schema_arrow, not schema: pf.schema.names flattens nested types
             available = set(pf.schema_arrow.names)
-            cols_to_read = ["language"]
+            cols_to_read = ["language"] + (
+                ["overlay_valid"] if "overlay_valid" in available else []
+            )
             if read_diag:
                 cols_to_read += [c for c in _SOURCE_DIAG_COLS if c in available]
 
@@ -401,6 +418,13 @@ def build_episodes(segments: list, shorter_side: int,
             merged = table.column("language")[0].as_py()
 
             if merged is None:
+                skipped_no_language += 1
+                continue
+            # A frame where stage 9 could not render the robot shows the inpainted video only
+            if "overlay_valid" in available and not all(
+                v is True for v in table.column("overlay_valid").to_pylist()
+            ):
+                skipped_no_robot += 1
                 continue
 
             if seg.clip_id not in clip_dims:
@@ -417,6 +441,12 @@ def build_episodes(segments: list, shorter_side: int,
             print(f"  Warning: skipping corrupt segment {seg.parquet_path}: {e}")
             continue
 
+    if skipped_no_language:
+        print(f"  Warning: skipped {skipped_no_language} segments whose language is null "
+              f"(no usable narration)")
+    if skipped_no_robot:
+        print(f"  Warning: skipped {skipped_no_robot} segments with frames where the robot "
+              f"was not rendered (overlay_valid false)")
     if skipped_corrupt:
         print(f"  Warning: skipped {skipped_corrupt} corrupt segments (parquet or video)")
 
@@ -609,11 +639,15 @@ def build_episode_parquet(ep: EpisodeSpec, target: LeRobotTarget, joint_remap: t
 
     # --- cam_pose_base → cam_frame (9-dim xyz_rot6d) ---
     cam_pose_col = table.column("cam_pose_base")
+    if cam_pose_col.null_count:
+        raise ValueError(f"{ep.seg_info.parquet_path}: cam_pose_base is null in "
+                         f"{cam_pose_col.null_count} of {T} rows. Every row needs its 4x4 pose.")
     cam_pose_flat = np.array(
         [np.array(v.as_py(), dtype=np.float64).flatten() for v in cam_pose_col],
         dtype=np.float64,
     )
-    assert cam_pose_flat.shape == (T, 16)
+    assert cam_pose_flat.shape == (T, 16), \
+        f"{ep.seg_info.parquet_path}: cam_pose_base is not a 4x4 matrix in every row"
     cam_frame = _cam_pose_to_xyz_rot6d(cam_pose_flat)  # (T, 9)
 
     # --- Build output columns ---
@@ -753,7 +787,7 @@ def compute_episodes_hash(episodes: list) -> str:
 def compute_guard_dict(args, total_episodes: int, episodes_hash: str) -> dict:
     return {
         "robot_name": args.robot_name,
-        "input_dir": args.input_dir,
+        "input_dir": osp.abspath(args.input_dir),
         "fps": args.fps,
         "shorter_side": args.shorter_side,
         "chunk_size": args.chunk_size,
@@ -768,6 +802,9 @@ def check_or_write_args_guard(guard: dict, output_dir: Path):
     guard_path = output_dir / "args.json"
     if guard_path.exists():
         saved = json.loads(guard_path.read_text())
+        # A guard that recorded input_dir as a relative path still matches the same directory.
+        if isinstance(saved.get("input_dir"), str):
+            saved["input_dir"] = osp.abspath(saved["input_dir"])
         if saved != guard:
             diff = {k: (saved.get(k), guard.get(k))
                     for k in set(saved) | set(guard) if saved.get(k) != guard.get(k)}
@@ -894,10 +931,18 @@ def main():
     joint_remap = build_joint_remap(robot_cfg.joint_names, target.target_joint_names)
 
     input_dir = osp.normpath(args.input_dir)
-    overlay_root = Path(input_dir + "_chunked") / args.robot_name / "overlay"
+    if osp.isdir(input_dir) or osp.isdir(input_dir + "_chunked"):
+        chunked_root, lerobot_root = input_dir + "_chunked", input_dir + "_lerobot"
+    else:
+        assert osp.isfile(input_dir) and input_dir.lower().endswith(".mp4"), \
+            f"--input_dir {input_dir}: expected a clip directory, a path whose _chunked " \
+            f"sibling exists, or one .mp4 clip"
+        chunked_root = osp.join(osp.dirname(input_dir), "chunked")
+        lerobot_root = osp.join(osp.dirname(input_dir), "lerobot")
+    overlay_root = Path(chunked_root) / args.robot_name / "overlay"
 
     if args.output_dir is None:
-        args.output_dir = str(Path(input_dir + "_lerobot") / args.robot_name)
+        args.output_dir = str(Path(lerobot_root) / args.robot_name)
     base_output_dir = Path(args.output_dir)
 
     part_a, _ = validate_part(args.part)

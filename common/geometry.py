@@ -42,10 +42,12 @@ def oob_ratio_from_crop(bbox: np.ndarray, img_size: Tuple[int, int], box_dilate:
 
 
 def project_3d_kpts_to_2d(kpts_3d: np.ndarray, img_focal: float, frame_shape: Tuple[int, int],
-                          cx: float = None, cy: float = None) -> np.ndarray:
-    """Pinhole-project camera-frame 3D keypoints to (non-clipped, float) 2D pixels."""
+                          cx: float = None, cy: float = None, fy: float = None) -> np.ndarray:
+    """Pinhole-project camera-frame 3D keypoints to (non-clipped, float) 2D pixels.
+    `img_focal` is fx, and also fy unless `fy` is given."""
     H, W = frame_shape
-    fx = fy = float(img_focal)
+    fx = float(img_focal)
+    fy = fx if fy is None else float(fy)
     if cx is None: cx = W / 2.0
     if cy is None: cy = H / 2.0
     X = kpts_3d[:, 0]

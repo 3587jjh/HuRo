@@ -1,6 +1,7 @@
 """Import a robot URDF into an Isaac-ready USD, cached on disk (regenerated when the URDF is
 newer). Must be called with a live SimulationApp, because the importer is a Kit extension.
 """
+import fcntl
 import os
 import re
 import shutil
@@ -31,6 +32,15 @@ def ensure_overlay_usd(urdf_path, usd_path) -> str:
     """Path to the USD for `urdf_path`, importing it into `usd_path` if that is missing or
     older than the URDF. Returns the USD path as a string."""
     urdf_path, usd_path = Path(urdf_path), Path(usd_path)
+    usd_path.parent.mkdir(parents=True, exist_ok=True)
+    # Workers on other GPUs share this file, so one imports while the rest wait for it.
+    with open(usd_path.parent / f"{usd_path.name}.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return _import_if_stale(urdf_path, usd_path)
+
+
+def _import_if_stale(urdf_path, usd_path) -> str:
+    """The body of ensure_overlay_usd, run while holding its lock."""
     if usd_path.is_file() and usd_path.stat().st_mtime >= urdf_path.stat().st_mtime:
         return str(usd_path)
 

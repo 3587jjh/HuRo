@@ -127,8 +127,10 @@ class IsaacSimRobotRenderer:
         from omni.isaac.core.utils.stage import add_reference_to_stage
         from omni.isaac.core.articulations import Articulation
         from pxr import Gf, UsdGeom, UsdLux, Sdf
+        from isaacsim.core.utils.render_product import set_resolution
 
         self._rep = rep
+        self._set_render_product_resolution = set_resolution
         self._Gf = Gf
         self._UsdGeom = UsdGeom
         self._UsdLux = UsdLux
@@ -228,17 +230,10 @@ class IsaacSimRobotRenderer:
         camera_prim = self.stage.DefinePrim(camera_path, "Camera")
         camera = self._UsdGeom.Camera(camera_prim)
 
-        camera.CreateFocalLengthAttr(self.camera_params.focal_length)
-        h_ap = self.camera_params.horizontal_aperture
+        fl, h_ap, v_ap, off_x, off_y = self._aperture(self.camera_params)
+        camera.CreateFocalLengthAttr(fl)
         camera.CreateHorizontalApertureAttr(h_ap)
-
-        # Vertical aperture from fy (correct even when fx != fy)
-        vertical_aperture = self.camera_params.focal_length * self.render_height / self.camera_params.fy
-        camera.CreateVerticalApertureAttr(vertical_aperture)
-
-        # Principal point offsets (mm). Image y-down → USD y-up.
-        off_x = (self.camera_params.cx - 0.5 * self.render_width) * (h_ap / self.render_width)
-        off_y = (0.5 * self.render_height - self.camera_params.cy) * (vertical_aperture / self.render_height)
+        camera.CreateVerticalApertureAttr(v_ap)
         camera.CreateHorizontalApertureOffsetAttr(off_x)
         camera.CreateVerticalApertureOffsetAttr(off_y)
 
@@ -262,17 +257,33 @@ class IsaacSimRobotRenderer:
         logger.info(f"  Position: {self.camera_params.pos}")
         logger.info(f"  Orientation (WXYZ): {self.camera_params.ori_wxyz}")
 
+    def _product_size(self, camera_params) -> Tuple[int, int]:
+        """Render product (width, height) for camera_params. RTX draws square pixels with the
+        horizontal aperture's pitch and ignores the vertical aperture. A camera with fy != fx is
+        rendered with fx on both axes at round(render_height * fx / fy) rows, and create_overlay
+        resizes the rows to render_height."""
+        return self.render_width, max(2, int(round(self.render_height * camera_params.fx / camera_params.fy)))
+
+    def _aperture(self, camera_params):
+        """(focal length, horizontal aperture, vertical aperture, horizontal offset, vertical offset)
+        in mm on the render product. A principal point right of or below the image centre takes a
+        negative horizontal or a positive vertical offset."""
+        width, height = self._product_size(camera_params)
+        mm_per_px = camera_params.horizontal_aperture / width
+        # cy in product rows, with the pixel-centre mapping of create_overlay's resize
+        cy = (camera_params.cy + 0.5) * height / self.render_height - 0.5
+        off_x = (0.5 * width - camera_params.cx) * mm_per_px
+        off_y = (cy - 0.5 * height) * mm_per_px
+        return camera_params.focal_length, camera_params.horizontal_aperture, height * mm_per_px, off_x, off_y
+
     def _update_camera_intrinsics_on_prim(self, camera_params):
-        """Update camera USD prim intrinsics (focal length, aperture, offsets)."""
+        """Update camera USD prim intrinsics (focal length, aperture, offsets) and the render product size."""
+        self._resize_render_product(self._product_size(camera_params))
         camera = self._UsdGeom.Camera(self.camera_prim)
-        fl = camera_params.focal_length
-        h_ap = camera_params.horizontal_aperture
-        v_ap = fl * self.render_height / camera_params.fy
+        fl, h_ap, v_ap, off_x, off_y = self._aperture(camera_params)
         camera.GetFocalLengthAttr().Set(fl)
         camera.GetHorizontalApertureAttr().Set(h_ap)
         camera.GetVerticalApertureAttr().Set(v_ap)
-        off_x = (camera_params.cx - 0.5 * self.render_width) * (h_ap / self.render_width)
-        off_y = (0.5 * self.render_height - camera_params.cy) * (v_ap / self.render_height)
         camera.GetHorizontalApertureOffsetAttr().Set(off_x)
         camera.GetVerticalApertureOffsetAttr().Set(off_y)
 
@@ -298,9 +309,10 @@ class IsaacSimRobotRenderer:
         """Setup replicator for synthetic data generation."""
         logger.info(f"Setting up replicator for camera: {self.camera_path}")
 
+        self._render_product_size = self._product_size(self.camera_params)
         self.render_product = self._rep.create.render_product(
             self.camera_path,
-            resolution=(self.render_width, self.render_height)
+            resolution=self._render_product_size
         )
 
         self.rgb_annotator = self._rep.AnnotatorRegistry.get_annotator("rgb")
@@ -311,51 +323,19 @@ class IsaacSimRobotRenderer:
 
         logger.info("Replicator setup complete")
 
-    def _teardown_replicator(self):
-        """Detach annotators and destroy render product (keeps world/robot/camera intact)."""
-        if hasattr(self, 'rgb_annotator') and self.rgb_annotator is not None:
-            try:
-                self.rgb_annotator.detach()
-            except Exception:
-                pass
-
-        if hasattr(self, 'semantic_annotator') and self.semantic_annotator is not None:
-            try:
-                self.semantic_annotator.detach()
-            except Exception:
-                pass
-
-        if hasattr(self, 'render_product') and self.render_product is not None:
-            try:
-                self._rep.destroy(self.render_product)
-            except Exception:
-                pass
-
-        try:
-            self._rep.orchestrator.stop()
-        except Exception:
-            pass
+    def _resize_render_product(self, size: Tuple[int, int]):
+        """Set the render product resolution in place, when it changes. The annotators stay attached
+        and the timeline keeps playing. Stopping the orchestrator stops the timeline, and the
+        articulation then ignores joint writes until the world is reset."""
+        if size != self._render_product_size:
+            self._set_render_product_resolution(self.render_product.path, size)
+            self._render_product_size = size
 
     def update_resolution(self, width: int, height: int):
-        """Recreate the render product/annotators at a new resolution (world/robot/camera kept)."""
-        if width == self.render_width and height == self.render_height:
-            return
-        _stdout_fd = os.dup(1)
-        _stderr_fd = os.dup(2)
-        _devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(_devnull, 1)
-        os.dup2(_devnull, 2)
-        os.close(_devnull)
-        try:
-            self._teardown_replicator()
-            self.render_width = width
-            self.render_height = height
-            self._setup_replicator()
-        finally:
-            os.dup2(_stdout_fd, 1)
-            os.close(_stdout_fd)
-            os.dup2(_stderr_fd, 2)
-            os.close(_stderr_fd)
+        """Set the output resolution between clips. World, robot, camera and annotators are kept."""
+        self.render_width = width
+        self.render_height = height
+        self._resize_render_product(self._product_size(self.camera_params))
 
     def _reset_physics(self, joint_positions: np.ndarray):
         """Reset physics and re-apply the base pose + joint_positions."""
@@ -535,10 +515,11 @@ class IsaacSimRobotRenderer:
                     # uint32 -> int32: cv2.resize cannot handle uint32
                     if semantic_mask.dtype == np.uint32:
                         semantic_mask = semantic_mask.astype(np.int32)
+                    # INTER_NEAREST_EXACT samples pixel centres, as INTER_LINEAR does for the RGB
                     semantic_mask = cv2.resize(
                         semantic_mask,
                         (video_frame.shape[1], video_frame.shape[0]),
-                        interpolation=cv2.INTER_NEAREST
+                        interpolation=cv2.INTER_NEAREST_EXACT
                     )
             except Exception as e:
                 logger.error(f"Error resizing rendered images: {e}")

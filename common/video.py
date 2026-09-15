@@ -4,25 +4,45 @@ from fractions import Fraction
 import av
 import cv2
 import pyarrow.parquet as pq
+from common.io import atomic_path
+
+
+def count_frames(path):
+    """Frame count of the first video stream: the count the container stores, or the decoded
+    count when it stores none (fragmented MP4, for example)."""
+    with av.open(path, "r") as reader:
+        stream = reader.streams.video[0]
+        return stream.frames or sum(1 for _ in reader.decode(video=0))
 
 
 def save_video_task(save_path, frames, fps, size):
-    """Encode BGR frames to MP4 (H.264/yuv420p, crf=16, 1s GOP). `size` is (width, height)."""
-    container = av.open(save_path, mode='w')
-    stream = container.add_stream('libx264', rate=Fraction(fps))
-    stream.width = size[0]
-    stream.height = size[1]
-    stream.pix_fmt = 'yuv420p'
-    stream.options = {'crf': '16', 'preset': 'medium', 'g': str(int(fps))}
+    """Encode BGR frames to MP4 (H.264/yuv420p, crf=16, 1s GOP) through a temp name and a rename.
+    `size` is (width, height), both even."""
+    if size[0] % 2 or size[1] % 2:
+        raise ValueError(f"{save_path}: size {size[0]}x{size[1]} has an odd side. "
+                         "H.264 yuv420p needs an even width and height.")
+    tmp_path = atomic_path(save_path)
+    try:
+        container = av.open(tmp_path, mode='w', format='mp4')
+        stream = container.add_stream('libx264', rate=Fraction(fps))
+        stream.width = size[0]
+        stream.height = size[1]
+        stream.pix_fmt = 'yuv420p'
+        stream.options = {'crf': '16', 'preset': 'medium', 'g': str(int(fps))}
 
-    for frame_bgr in frames:
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        frame = av.VideoFrame.from_ndarray(frame_rgb, format='rgb24')
-        for packet in stream.encode(frame):
+        for frame_bgr in frames:
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            frame = av.VideoFrame.from_ndarray(frame_rgb, format='rgb24')
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode():
             container.mux(packet)
-    for packet in stream.encode():
-        container.mux(packet)
-    container.close()
+        container.close()
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+    os.replace(tmp_path, save_path)
 
 
 def validate_segment_outputs(annot_path, video_path=None):
@@ -50,8 +70,7 @@ def validate_segment_outputs(annot_path, video_path=None):
 
     if has_video:
         try:
-            with av.open(video_path, "r") as r:
-                n_frames = r.streams.video[0].frames or 0
+            n_frames = count_frames(video_path)
             if n_frames != num_rows:
                 os.remove(video_path); os.remove(annot_path); return False
         except Exception:
@@ -68,13 +87,11 @@ def validate_video_pair(video_path, ref_video_path):
     if not os.path.exists(ref_video_path):
         os.remove(video_path); return False
     try:
-        with av.open(ref_video_path, "r") as r:
-            ref_frames = r.streams.video[0].frames or 0
+        ref_frames = count_frames(ref_video_path)
     except Exception:
         return False
     try:
-        with av.open(video_path, "r") as r:
-            n_frames = r.streams.video[0].frames or 0
+        n_frames = count_frames(video_path)
         if n_frames != ref_frames:
             os.remove(video_path); return False
     except Exception:

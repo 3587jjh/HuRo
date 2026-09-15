@@ -1,4 +1,4 @@
-# Stage 1 — camera intrinsics (droidcalib, with anycalib fallback).
+# Stage 1: camera intrinsics (droidcalib, with anycalib fallback).
 # Reads raw clips and writes per-clip JSON
 # {fx, fy, cx, cy, xi, H, W, model} ({} if no valid estimate).
 #
@@ -23,7 +23,7 @@ from pathlib import Path
 
 # repo root on sys.path so `common` is importable when run as a script
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common.paths import setup_submodule_imports, partition, DROIDCALIB_WEIGHTS, ANYCALIB_WEIGHTS
+from common.paths import setup_submodule_imports, partition, mp4_clip_id, DROIDCALIB_WEIGHTS, ANYCALIB_WEIGHTS
 from common.camera import need_undistort, is_valid_intrinsics_light, early_stop_intrinsics, intrinsics_selection
 
 setup_submodule_imports()
@@ -100,7 +100,8 @@ def frame_stream_droidcalib(frames, image_size, mei=False):
     w1 = int(w0 * scale)
     h2, w2 = h1-h1%8, w1-w1%8
 
-    size_factor = [(w2 / w0), (h2 / h0)]
+    # the right and bottom crop keeps the pixel scale, so the resize alone sets the factor
+    size_factor = [(w1 / w0), (h1 / h0)]
     intrinsics = torch.tensor(
         [fx*size_factor[0], fy*size_factor[1], cx*size_factor[0], cy*size_factor[1]] + ([0.0] if mei else []),
         dtype=torch.float32
@@ -246,7 +247,7 @@ def iter_video_frames_anycalib(path_mp4, is_moving, laps, lap_top_ratio, lap_min
 
 
 def pred_droidcalib(frames):
-    # frames: list[np.ndarray(H,W,3), BGR, uint8], len=motion_size
+    # frames: list[np.ndarray(H,W,3), BGR, uint8]
     args_droidcalib = get_args_droidcalib()
     droid = None
     for (t, frame, intrinsics, sf) in frame_stream_droidcalib(frames, args_droidcalib.image_size_target, mei=True):
@@ -257,14 +258,19 @@ def pred_droidcalib(frames):
     _, intr = droid.terminate()
     del droid
     torch.cuda.empty_cache()
-    intr[0:4:2] /= sf[0]
-    intr[1:4:2] /= sf[1]
+    # cv2.resize aligns pixel centres, so the principal point maps back as (c + 0.5) / s - 0.5
+    intr[0] /= sf[0]
+    intr[1] /= sf[1]
+    intr[2] = (intr[2] + 0.5) / sf[0] - 0.5
+    intr[3] = (intr[3] + 0.5) / sf[1] - 0.5
     return intr
 
 
 def pred_anycalib(model, frame):
     # frame: torch (3,H,W), RGB, [0,1]
     intr = model.predict(frame, cam_id="ucm")["intrinsics"].detach().to("cpu").numpy()
+    # AnyCalib puts pixel centres at +0.5. The pipeline puts them at integer coordinates, as OpenCV does.
+    intr[2:4] -= 0.5
     return intr
 
 
@@ -335,7 +341,12 @@ def main():
 
     if os.path.isdir(args.input_dir):
         paths_mp4 = sorted(glob.glob(os.path.join(args.input_dir, '*.mp4')))
-        paths_mp4 = partition(paths_mp4, args.part)
+        # stages list raw clips by the lower-case '.mp4' suffix only
+        paths_other = sorted(p for p in glob.glob(os.path.join(args.input_dir, '*.[mM][pP]4')) if not p.endswith('.mp4'))
+        if paths_other:
+            log(f"[WARN] {len(paths_other)} file(s) not read, such as {os.path.basename(paths_other[0])}. "
+                "Clips need the lower-case '.mp4' suffix.")
+        paths_mp4 = partition(paths_mp4, args.part, key=mp4_clip_id)
         if len(paths_mp4) == 0: return
         output_dir = os.path.normpath(args.input_dir) + '_intr'
         os.makedirs(output_dir, exist_ok=True)
@@ -354,6 +365,16 @@ def main():
     log(f'\033[2;32mSkipping {len(paths_mp4) - len(paths_mp4_new)} mp4 files (already processed)\033[0m\n#######\n')
     paths_mp4 = paths_mp4_new
     if len(paths_mp4) == 0: return
+
+    # later stages encode video with libx264 yuv420p, which needs an even width and height
+    for path_mp4 in paths_mp4:
+        with av.open(path_mp4, "r") as reader:
+            s = reader.streams.video[0]
+            W = s.codec_context.width or s.width
+            H = s.codec_context.height or s.height
+        if W % 2 or H % 2:
+            raise ValueError(f"{path_mp4}: frame size {W}x{H} is odd. "
+                             "Later stages encode video with libx264 yuv420p, which needs an even width and height.")
 
     # anycalib is loaded on the first clip that actually falls back to it
     anycalib = None

@@ -1,4 +1,4 @@
-"""Minimal PyTorch loader for a stage-11 LeRobot dataset, and the reference for reading one.
+"""Minimal PyTorch loader for a stage-10 LeRobot dataset, and the reference for reading one.
 Feature conventions:
 
   observation.state / action   (J,) joint angles, J = 48 for allex.

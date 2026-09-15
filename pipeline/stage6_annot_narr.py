@@ -1,8 +1,8 @@
-# Stage 7 — narration (Qwen3.5 VLM) + chunking into per-segment videos and parquets.
-# Reads stage 6's shards and writes per-segment undistorted videos + parquets (frame_id reset,
+# Stage 6: narration (Qwen3.5 VLM) + chunking into per-segment videos and parquets.
+# Reads stage 5's shards and writes per-segment undistorted videos + parquets (frame_id reset,
 # narr and the merged `language` instruction added).
 #
-#   CUDA_VISIBLE_DEVICES=0 python pipeline/stage7_annot_narr.py \
+#   CUDA_VISIBLE_DEVICES=0 python pipeline/stage6_annot_narr.py \
 #       --input_dir /path/to/clips --part 1/1 --no_tqdm
 import warnings
 warnings.filterwarnings('ignore')
@@ -10,18 +10,20 @@ warnings.filterwarnings('ignore')
 from typing import Dict, List, Optional
 from pathlib import Path
 import torch
-import glob, av, os, os.path as osp, sys, argparse, numpy as np, cv2
+import gc, glob, av, os, os.path as osp, sys, argparse, numpy as np, cv2
 from tqdm import tqdm
 import json
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common.paths import partition
+from common.paths import partition, mp4_clip_id
 from common.camera import need_undistort, build_undistort_maps, undistort_apply
 from common.video import save_video_task, validate_segment_outputs
-from common.io import merge_narration, ParquetReader, rows_to_parquet, hand_for_side
+from common.io import (merge_narration, ParquetReader, rows_to_parquet, hand_for_side, atomic_path,
+                       remove_stale_temps)
 from pipeline.captioning.caption import load_vlm_model, get_caption
 from pipeline.captioning.tracker import RejectionTracker
+from pipeline.segmentation.detectors import DetectorDetectron2
 
 io_executor = ThreadPoolExecutor(max_workers=2)
 
@@ -197,15 +199,42 @@ def _draw_frame_label(img: np.ndarray, label: str) -> np.ndarray:
 # Multi-person detection filter
 #############################################################################################
 
-def _is_multi_person_segment(parquet_reader, start_fid, end_fid, n_thresh, frame_thresh):
+def _count_people(detector, path_mp4, frame_ids, frame_shape, need_undist, map1, map2):
+    """Person count (COCO person, score > 0.5) on each frame in `frame_ids`, detected on the
+    undistorted frame."""
+    counts = {}
+    if not frame_ids:
+        return counts
+    last = max(frame_ids)
+    with av.open(path_mp4, "r") as reader:
+        for frame_id, frame in enumerate(reader.decode(video=0)):
+            if frame_id == 0:
+                assert frame_shape == (frame.height, frame.width)
+            if frame_id > last:
+                break
+            if frame_id not in frame_ids:
+                continue
+            img = frame.to_ndarray(format="bgr24")
+            if need_undist: img = undistort_apply(img, map1, map2)
+            bboxes, _ = detector.get_bboxes(img)
+            counts[frame_id] = len(bboxes) if bboxes is not None else 0
+    return counts
+
+
+def _drop_hand_mask(row):
+    """Null per-hand hand_mask going forward (only stage 5 consumes it)."""
+    for h in (row.get("hands") or []):
+        if h is not None:
+            h["hand_mask"] = None
+    return row
+
+
+def _is_multi_person_segment(person_counts, start_fid, end_fid, n_thresh, frame_thresh):
     """Check if segment has multi-person contamination.
-    Returns True if >= frame_thresh frames have n_person_det >= n_thresh."""
+    Returns True if >= frame_thresh frames have a person count >= n_thresh."""
     flagged = 0
     for fid in range(start_fid, end_fid + 1):
-        row = parquet_reader.get(fid)
-        if row is None:
-            continue
-        n_det = row.get('n_person_det')
+        n_det = person_counts.get(fid)
         if n_det is not None and n_det >= n_thresh:
             flagged += 1
             if flagged >= frame_thresh:
@@ -224,10 +253,9 @@ def main():
     parser.add_argument('--min_seq_len', type=int, default=50, help='Min output segment length in raw frames (30fps)')
     parser.add_argument('--part', type=str, default='1/1')
     parser.add_argument('--no_tqdm', action='store_true')
-    # additional parameters for VLM
     parser.add_argument('--stride', type=int, default=3, help='Take every stride-th frame for VLM (effective fps = 30/stride)')
     parser.add_argument('--n_caption_samples', type=int, default=2, help='Number of VLM caption samples per batch')
-    parser.add_argument('--n_caption_batches', type=int, default=2, help='Number of batched VLM predictions (total samples = n_caption_samples * n_caption_batches)')
+    parser.add_argument('--n_caption_batches', type=int, default=2, help='Number of batched VLM predictions (total samples = n_caption_samples * n_caption_batches, at least 2)')
     parser.add_argument('--uniform_max_seq_len', type=int, default=210, help='Window size for uniform sampling')
     parser.add_argument('--uniform_overlap_ratio', type=float, default=0.50, help='Overlap ratio between windows')
     parser.add_argument('--traj_dot_ratio', type=float, default=0.018, help='Dot diameter as ratio of min(H,W)')
@@ -235,21 +263,24 @@ def main():
     parser.add_argument('--uniform_overlay_len', type=int, default=18, help='Max past raw frames (30fps) used for trajectory overlay per frame')
     parser.add_argument('--gap_fill', type=int, default=3, help='Max consecutive missing raw frames (30fps) to bridge when building contiguous contact sequences')
     parser.add_argument('--traj_gap_fill', type=int, default=3, help='Max consecutive missing raw frames (30fps) to interpolate in trajectory overlay (world-coord interpolation for visualization)')
+    parser.add_argument('--pdet_stride', type=int, default=8, help='Person detection sampling stride (every N-th frame)')
     parser.add_argument('--pdet_n_thresh', type=int, default=3, help='Person detection count threshold per frame (0 to disable)')
-    parser.add_argument('--pdet_frame_thresh', type=int, default=2, help='Min flagged frames to reject a segment')
+    parser.add_argument('--pdet_frame_thresh', type=int, default=2, help='Min sampled frames with at least --pdet_n_thresh people that drop a whole contact sequence')
     args = parser.parse_args()
 
     assert args.min_seq_len <= args.uniform_max_seq_len
     assert args.uniform_overlay_len <= args.uniform_max_seq_len
+    assert args.n_caption_samples * args.n_caption_batches >= 2, \
+        "n_caption_samples * n_caption_batches must be at least 2: a left or right caption needs 2 samples that keep it"
 
     tracker = RejectionTracker(enabled=True)
 
     input_dir = osp.normpath(args.input_dir)
     if osp.isdir(input_dir):
         paths_mp4 = sorted(glob.glob(osp.join(input_dir, '*.mp4')))
-        paths_mp4 = partition(paths_mp4, args.part)
+        paths_mp4 = partition(paths_mp4, args.part, key=mp4_clip_id)
         if len(paths_mp4) == 0: return
-        arm_dir = input_dir + '_arm'
+        extr_dir = input_dir + '_extr'
         output_video_dir = osp.join(input_dir + '_chunked', 'original', 'video')
         output_annot_dir = osp.join(input_dir + '_chunked', 'original', 'annot')
     else:
@@ -257,7 +288,7 @@ def main():
         assert input_dir.lower().endswith('.mp4')
         paths_mp4 = [input_dir]
         base_dir = osp.dirname(input_dir)
-        arm_dir = osp.join(base_dir, 'arm')
+        extr_dir = osp.join(base_dir, 'extr')
         output_video_dir = osp.join(base_dir, 'chunked', 'original', 'video')
         output_annot_dir = osp.join(base_dir, 'chunked', 'original', 'annot')
 
@@ -272,6 +303,13 @@ def main():
         with open(tmp, "wb"): pass
         os.replace(tmp, done)
 
+    def save_caption_log(clip_id, path):
+        """The clip's caption trace so far, written through a temp name and a rename."""
+        tmp = atomic_path(path)
+        with open(tmp, "w") as f:
+            json.dump(tracker.to_dict(clip_id), f, indent=2)
+        os.replace(tmp, path)
+
     print(f'Got {len(paths_mp4)} mp4 files in total.')
     paths_mp4_new = []
     for path_mp4 in paths_mp4:
@@ -283,70 +321,105 @@ def main():
     os.makedirs(output_video_dir, exist_ok=True)
     os.makedirs(output_annot_dir, exist_ok=True)
 
+    ############################################################################################
+    # Raises when stage 5 has not finished the clip. A finished clip yields nothing when its shards
+    # are missing or empty, when its intrinsics cannot be undistorted, or when no contact sequence
+    # reaches min_seq_len.
+    def _plan_clip(clip_id):
+        extr_done = osp.join(extr_dir, f"{clip_id}.done")
+        if not osp.exists(extr_done):
+            raise RuntimeError(f"{extr_done} is missing: stage 5 has not finished {clip_id}")
+        try: parquet_reader = ParquetReader(extr_dir, clip_id)
+        except FileNotFoundError: return None
+        all_ids = parquet_reader.get_frame_ids()
+        if not all_ids: return None
+
+        meta = parquet_reader.get(all_ids[0])
+        intr = np.array([meta['fx'], meta['fy'], meta['cx'], meta['cy'], meta['xi']], dtype=np.float64)
+        frame_shape = (int(meta['height']), int(meta['width']))
+        need_undist = need_undistort(intr, frame_shape)
+        if need_undist is None: return None
+        map1 = map2 = None
+        if need_undist:
+            try: map1, map2, _, intr = build_undistort_maps(frame_shape, intr, auto=True)
+            except Exception: return None
+
+        # 1. refine contact sequences
+        contact_ids = [frame_id for frame_id in all_ids
+                       if (row := parquet_reader.get(frame_id)) is not None
+                       and row.get('cam_pose') is not None
+                       and any(h.get('kpts3d') is not None for h in row.get('hands', []))]
+        if not contact_ids: return None
+
+        # Build contiguous contact sequences (no length filter here, min_seq_len applies later)
+        sequences_1 = [] # [[start0, end0], ...]
+        start_id = contact_ids[0]
+        prev_id = contact_ids[0]
+        for i in range(1, len(contact_ids)):
+            curr_id = contact_ids[i]
+            if curr_id <= prev_id + 1 + args.gap_fill:
+                prev_id = curr_id
+            else:
+                sequences_1.append([start_id, prev_id])
+                start_id = curr_id
+                prev_id = curr_id
+        sequences_1.append([start_id, prev_id])
+
+        sequences = [[s, e] for s, e in sequences_1 if e - s + 1 >= args.min_seq_len]
+        if not sequences: return None
+        return dict(parquet_reader=parquet_reader, meta=meta, intr=intr, frame_shape=frame_shape,
+                    need_undist=need_undist, map1=map1, map2=map2, sequences=sequences)
+
+    ############################################################################################
+    # 0. Person counts on every pdet_stride-th frame inside the sequences, for the multi-person
+    # gate and the n_person_det column. The detector is released before the VLM loads.
+    person_counts = {}
+    detector = None
+    with torch.inference_mode():
+        for path_mp4 in tqdm(paths_mp4, desc="person counts", unit="clip", position=1, leave=True,
+                             dynamic_ncols=True, disable=args.no_tqdm):
+            clip_id = osp.basename(path_mp4)[:-4]
+            plan = _plan_clip(clip_id)
+            if plan is None: mark_done(clip_id); continue
+            fids = {fid for s, e in plan['sequences'] for fid in range(s, e + 1)
+                    if fid % args.pdet_stride == 0}
+            if fids and detector is None:
+                detector = DetectorDetectron2()
+            person_counts[clip_id] = _count_people(detector, path_mp4, fids, plan['frame_shape'], plan['need_undist'],
+                                                   plan['map1'], plan['map2'])
+    del detector
+    gc.collect()
+    torch.cuda.empty_cache()
+    paths_mp4 = [p for p in paths_mp4 if osp.basename(p)[:-4] in person_counts]
+    if len(paths_mp4) == 0: return
+
     print("Loading VLM model...")
     load_vlm_model()
     print("VLM model loaded.")
 
     ############################################################################################
     with torch.inference_mode():
-        for path_mp4 in tqdm(paths_mp4, desc="clips", unit="clip", position=1, leave=True, dynamic_ncols=True):
+        for path_mp4 in tqdm(paths_mp4, desc="clips", unit="clip", position=1, leave=True, dynamic_ncols=True,
+                             disable=args.no_tqdm):
             clip_id = osp.basename(path_mp4)[:-4]
-
-            # early-read stage 6 (arm) shards
-            try: parquet_reader = ParquetReader(arm_dir, clip_id)
-            except FileNotFoundError: mark_done(clip_id); continue
-            contact_ids = parquet_reader.get_frame_ids()
-            if not contact_ids: mark_done(clip_id); continue
-            max_contact_id = parquet_reader.get_max_frame_id()
-                
-            ############################################################################################
-            # 1. refine contact sequences
-            contact_ids = [frame_id for frame_id in contact_ids
-                           if (row := parquet_reader.get(frame_id)) is not None
-                           and row.get('cam_pose') is not None
-                           and any(h.get('kpts3d') is not None for h in row.get('hands', []))]
-            if not contact_ids: mark_done(clip_id); continue
-
-            # Build contiguous contact sequences (no length filter here, min_seq_len applies later)
-            sequences_1 = [] # [[start0, end0], ...]
-            start_id = contact_ids[0]
-            prev_id = contact_ids[0]
-
-            for i in range(1, len(contact_ids)):
-                curr_id = contact_ids[i]
-                if curr_id <= prev_id + 1 + args.gap_fill:
-                    prev_id = curr_id
-                else:
-                    sequences_1.append([start_id, prev_id])
-                    start_id = curr_id
-                    prev_id = curr_id
-            sequences_1.append([start_id, prev_id])
-            if not sequences_1: mark_done(clip_id); continue
-
-            sequences = [[s, e] for s, e in sequences_1 if e - s + 1 >= args.min_seq_len]
-            if not sequences: mark_done(clip_id); continue
+            plan = _plan_clip(clip_id)
+            if plan is None: mark_done(clip_id); continue
+            parquet_reader, _meta = plan['parquet_reader'], plan['meta']
+            intr, frame_shape = plan['intr'], plan['frame_shape']
+            need_undist, map1, map2 = plan['need_undist'], plan['map1'], plan['map2']
+            sequences = plan['sequences']
+            counts = person_counts[clip_id]
 
             # Multi-person detection hard gate
             if args.pdet_n_thresh > 0:
                 sequences = [
                     [s, e] for s, e in sequences
-                    if not _is_multi_person_segment(parquet_reader, s, e,
+                    if not _is_multi_person_segment(counts, s, e,
                                                      args.pdet_n_thresh, args.pdet_frame_thresh)
                 ]
                 if not sequences: mark_done(clip_id); continue
 
-            ############################################################################################
-            # 2. Intrinsics (from stage-6 carried columns) + undistortion
-            _meta = parquet_reader.get(parquet_reader.get_frame_ids()[0])
-            intr = np.array([_meta['fx'], _meta['fy'], _meta['cx'], _meta['cy'], _meta['xi']], dtype=np.float64)
-            image_h, image_w = int(_meta['height']), int(_meta['width'])
-            frame_shape = (image_h, image_w)
-
-            need_undist = need_undistort(intr, frame_shape)
-            assert need_undist is not None
-            if need_undist:
-                try: map1, map2, _, intr = build_undistort_maps(frame_shape, intr, auto=True)
-                except Exception: print('unexpected logic'); sys.exit(1)
+            image_h, image_w = frame_shape
             img_fx, img_fy, img_cx, img_cy = intr[0], intr[1], intr[2], intr[3]
 
             def _extract_hand_wrist_3d(row: Dict, side: int) -> Optional[np.ndarray]:
@@ -462,16 +535,21 @@ def main():
             seg_annot_dir = osp.join(output_annot_dir, clip_id)
             os.makedirs(seg_video_dir, exist_ok=True)
             os.makedirs(seg_annot_dir, exist_ok=True)
+            remove_stale_temps(seg_video_dir)
+            remove_stale_temps(seg_annot_dir)
 
-            # Collect valid existing segment stems to skip re-processing
-            existing_stems = set()
+            # Collect existing segment stems to skip re-processing. A stem with a <seg>.parquet
+            # (from stage 7 or a release) exists, and none of its files is checked or removed.
+            existing_stems = {f[:-len('.parquet')] for f in os.listdir(seg_annot_dir) if f.endswith('.parquet') and not f.endswith('_narr.parquet')} if osp.isdir(seg_annot_dir) else set()
             video_stems = {f[:-4] for f in os.listdir(seg_video_dir) if f.endswith('.mp4') and not f.endswith('_inpainted.mp4')} if osp.isdir(seg_video_dir) else set()
-            annot_stems = {f[:-8] for f in os.listdir(seg_annot_dir) if f.endswith('.parquet')} if osp.isdir(seg_annot_dir) else set()
-            for stem in video_stems | annot_stems:
-                ap = osp.join(seg_annot_dir, stem + '.parquet')
+            annot_stems = {f[:-len('_narr.parquet')] for f in os.listdir(seg_annot_dir) if f.endswith('_narr.parquet')} if osp.isdir(seg_annot_dir) else set()
+            for stem in (video_stems | annot_stems) - existing_stems:
+                ap = osp.join(seg_annot_dir, stem + '_narr.parquet')
                 vp = osp.join(seg_video_dir, stem + '.mp4')
                 if validate_segment_outputs(annot_path=ap, video_path=vp):
                     existing_stems.add(stem)
+
+            caption_log_path = osp.join(seg_annot_dir, "_caption_log.json")
 
             # Sort windows by start frame for streaming
             windows_to_process.sort(key=lambda x: x[0])
@@ -502,6 +580,11 @@ def main():
                 if trim_end - trim_start + 1 < args.min_seq_len:
                     return
 
+                win_str = f"{frame_ids[trim_start]:06d}-{frame_ids[trim_end]:06d}"
+                file_name = f"{frame_ids[trim_start]:06d}_{frame_ids[trim_end]:06d}"
+                if file_name in existing_stems:
+                    return
+
                 sampled_frames_with_markers = []
                 for frame_num, idx in enumerate(indices, 1):
                     if cam_poses[idx] is None:
@@ -526,7 +609,6 @@ def main():
 
                 # Convert BGR to RGB for VLM
                 markers_rgb = [cv2.cvtColor(f, cv2.COLOR_BGR2RGB) for f in sampled_frames_with_markers]
-                win_str = f"{frame_ids[trim_start]:06d}-{frame_ids[trim_end]:06d}"
                 narr = get_caption(
                     markers_rgb,
                     n_samples=args.n_caption_samples,
@@ -550,7 +632,7 @@ def main():
                 for fid in frame_ids:
                     row = parquet_reader.get(fid)
                     if row is not None:
-                        row = dict(row)
+                        row = _drop_hand_mask(dict(row))
                     else:
                         # Gap frame not in parquet: construct minimal row
                         row = {
@@ -558,28 +640,27 @@ def main():
                             "height": frame_shape[0],
                             "width": frame_shape[1],
                             "intr_model": _meta['intr_model'],
+                            "fx": _meta['fx'], "fy": _meta['fy'], "cx": _meta['cx'],
+                            "cy": _meta['cy'], "xi": _meta['xi'],
+                            "pinhole_fx": _meta.get('pinhole_fx'),
+                            "pinhole_fy": _meta.get('pinhole_fy'),
+                            "pinhole_cx": _meta.get('pinhole_cx'),
+                            "pinhole_cy": _meta.get('pinhole_cy'),
                             "hands": [],
-                            "arm_mask": None,
                             "cam_pose": None,
                         }
+                    row["n_person_det"] = counts.get(fid)
                     # Reset frame_id to be 0-indexed relative to this segment
                     row["frame_id"] = fid - start_fid
                     row["narr"] = narr
                     row["language"] = language
                     segment_rows.append(row)
 
-                actual_start = frame_ids[0]
-                actual_end = frame_ids[-1]
-                file_name = f"{actual_start:06d}_{actual_end:06d}"
-
-                if file_name in existing_stems:
-                    return  # Already validated, skip
-
                 h, w = imgs[0].shape[:2]
                 video_path = osp.join(seg_video_dir, file_name + ".mp4")
                 io_futures.append(io_executor.submit(save_video_task, video_path, list(imgs), 30.0, (w, h)))
 
-                parquet_path = osp.join(seg_annot_dir, file_name + ".parquet")
+                parquet_path = osp.join(seg_annot_dir, file_name + "_narr.parquet")
                 io_futures.append(io_executor.submit(rows_to_parquet, segment_rows, parquet_path))
 
             ############################################################################################
@@ -656,9 +737,7 @@ def main():
             for fut in io_futures:
                 fut.result()
             # Save the full caption trace log for cross-clip aggregation
-            caption_log_path = osp.join(seg_annot_dir, "_caption_log.json")
-            with open(caption_log_path, "w") as f:
-                json.dump(tracker.to_dict(clip_id), f, indent=2)
+            save_caption_log(clip_id, caption_log_path)
             tracker.reset()
             mark_done(clip_id)
 

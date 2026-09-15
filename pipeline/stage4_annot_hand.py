@@ -1,4 +1,4 @@
-# Stage 4 — 3D hand keypoints, MANO parameters and hand masks (HAWOR).
+# Stage 4: 3D hand keypoints, MANO parameters and hand masks (HAWOR).
 # Reads stage 3's shards and writes the same rows + per-hand kpts3d / wrist_rot / finger_rot /
 # hand_mask and a null cam_pose for stage 5 to fill.
 #
@@ -9,6 +9,7 @@ warnings.filterwarnings('ignore')
 from collections import defaultdict
 import os, os.path as osp, glob, argparse
 import numpy as np
+from scipy.spatial.transform import Rotation
 import torch
 import av
 from tqdm import tqdm
@@ -17,10 +18,10 @@ from pathlib import Path
 
 # repo root on sys.path so `common` is importable when run as a script
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common.paths import partition, HAWOR_CKPT, setup_hawor_imports
+from common.paths import partition, mp4_clip_id, HAWOR_CKPT, setup_hawor_imports
 from common.camera import need_undistort, build_undistort_maps, undistort_apply
 from common.geometry import oob_ratio_from_crop, project_3d_kpts_to_2d
-from common.io import ParquetReader, write_clip_chunks, mark_done
+from common.io import ParquetReader, write_clip_chunks, mark_done, remove_clip_shards
 
 setup_hawor_imports()
 from scripts.scripts_test_video.hawor_video import load_hawor, estimate_3d_hand_keypoints
@@ -42,7 +43,7 @@ def main():
 
     if osp.isdir(input_dir):
         paths_mp4 = sorted(glob.glob(osp.join(input_dir, '*.mp4')))
-        paths_mp4 = partition(paths_mp4, args.part)
+        paths_mp4 = partition(paths_mp4, args.part, key=mp4_clip_id)
         if len(paths_mp4) == 0: return
         contact_dir = input_dir + '_contact_refined'
         output_dir = input_dir + '_hand'
@@ -84,8 +85,11 @@ def main():
     stride = (seq_len * 3) // 4 # overlap ratio = 0.25
 
     with torch.inference_mode():
-        for path_mp4 in tqdm(paths_mp4, desc="clips", unit="clip", position=1, leave=True, dynamic_ncols=True):
+        for path_mp4 in tqdm(paths_mp4, desc="clips", unit="clip", position=1, leave=True, dynamic_ncols=True,
+                             disable=args.no_tqdm):
             clip_id = osp.basename(path_mp4)[:-4]
+            # shards left by an unfinished run of this clip would be read together with this run's
+            remove_clip_shards(output_dir, clip_id)
 
             # read stage 3's refined-contact shards (intrinsics carried as columns)
             try: hos_reader = ParquetReader(contact_dir, clip_id)
@@ -166,14 +170,19 @@ def main():
                     if acc["sum"] is None: acc["sum"] = kpts.copy(); acc["cnt"] = 1
                     else: acc["sum"] += kpts; acc["cnt"] += 1
 
+                # rotations are summed as quaternions. Two axis-angle estimates of one rotation near
+                # 180 deg can point in opposite directions, and their plain mean is near the identity.
                 for fid, h_idx, wr, fr in zip(frame_ids, hand_indices, wrist_rot_seq, finger_rot_seq):
                     acc_m = frame2mano[fid][h_idx]
-                    wr = np.asarray(wr, dtype=np.float32)
-                    fr = np.asarray(fr, dtype=np.float32)
+                    q_wr = Rotation.from_rotvec(np.asarray(wr, dtype=np.float64)).as_quat()  # (4,)
+                    q_fr = Rotation.from_rotvec(np.asarray(fr, dtype=np.float64)).as_quat()  # (15, 4)
                     if acc_m["orient_sum"] is None:
-                        acc_m["orient_sum"] = wr.copy(); acc_m["pose_sum"] = fr.copy(); acc_m["cnt"] = 1
+                        acc_m["orient_sum"] = q_wr; acc_m["pose_sum"] = q_fr; acc_m["cnt"] = 1
                     else:
-                        acc_m["orient_sum"] += wr; acc_m["pose_sum"] += fr; acc_m["cnt"] += 1
+                        # q and -q are the same rotation. Each joins the running sum's hemisphere
+                        if np.dot(q_wr, acc_m["orient_sum"]) < 0: q_wr = -q_wr
+                        q_fr = np.where((q_fr * acc_m["pose_sum"]).sum(axis=1, keepdims=True) < 0, -q_fr, q_fr)
+                        acc_m["orient_sum"] += q_wr; acc_m["pose_sum"] += q_fr; acc_m["cnt"] += 1
 
                 faces_t = mano_faces_t[side]
                 verts_t = torch.from_numpy(verts3d_seq).float()  # (T, V, 3)
@@ -328,8 +337,9 @@ def main():
                         wrist_rot = None
                         finger_rot = None
                     else:
-                        wrist_rot = (acc_m["orient_sum"] / acc_m["cnt"]).astype(np.float32)
-                        finger_rot = (acc_m["pose_sum"] / acc_m["cnt"]).astype(np.float32)
+                        # from_quat normalizes the quaternion sums
+                        wrist_rot = Rotation.from_quat(acc_m["orient_sum"]).as_rotvec().astype(np.float32)
+                        finger_rot = Rotation.from_quat(acc_m["pose_sum"]).as_rotvec().astype(np.float32)
 
                     h_new['kpts3d'] = kpts3d
                     h_new['wrist_rot'] = wrist_rot

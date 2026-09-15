@@ -3,12 +3,11 @@ Parquet tables.
 
   <clips>_chunked/
     original/annot/<clip_id>/<start>_<end>.parquet          human annotations (stages 2-7)
-    <robot>/annot/<clip_id>/<start>_<end>.parquet           retargeted robot (stage 9)
-    <robot>/overlay/annot/<clip_id>/<start>_<end>.parquet   the same plus overlay_valid (stage 10)
+    <robot>/annot/<clip_id>/<start>_<end>.parquet           retargeted robot (stage 8)
+    <robot>/overlay/annot/<clip_id>/<start>_<end>.parquet   the same plus overlay_valid (stage 9)
 
-All three use the one schema in `common/io.py`. A stage fills the columns it computes and
-leaves every other column null. Rows line up across the three by `frame_id`, which restarts at
-0 in each segment, so a row's index in the clip is `<start> + frame_id`.
+All three use the one schema in `common/io.py`. Rows line up across the three by `frame_id`,
+which restarts at 0 in each segment, so a row's index in the clip is `<start> + frame_id`.
 
 Running this prints one segment's schema metadata, the columns each table filled, and one
 frame. Each table is read with `pq.read_table(...).to_pylist()` and decoded with `decode_row`.
@@ -50,7 +49,7 @@ def report(path, title):
     print(f"  {path}")
     print(f"  {len(rows)} rows, frame_id {rows[0]['frame_id']}..{rows[-1]['frame_id']}")
 
-    # Schema-level metadata, which `to_pylist` drops. Stages 9 and 10 record the robot here, so
+    # Schema-level metadata, which `to_pylist` drops. Stages 8 and 9 record the robot here, so
     # their tables say what `state_qpos` and `state_eef_*` hold without the config beside them.
     meta = table.schema.metadata or {}
     if meta:
@@ -81,20 +80,26 @@ def report_hands(row):
 
 def main(root):
     root = Path(root)
-    human = sorted(root.glob("original/annot/*/*.parquet"))
+    human = sorted(p for p in root.glob("original/annot/*/*.parquet")
+                   if not p.name.endswith("_narr.parquet"))
+    title, suffix = "human table (stages 2-7)", ".parquet"
     if not human:
-        sys.exit(f"no original/annot/<clip>/<seg>.parquet under {root}")
+        # Runs that stop at stage 6 hold only <seg>_narr.parquet.
+        human = sorted(root.glob("original/annot/*/*_narr.parquet"))
+        title, suffix = "human table before arm masks (stages 2-6)", "_narr.parquet"
+    if not human:
+        sys.exit(f"no original/annot/<clip>/<seg>.parquet or <seg>_narr.parquet under {root}")
     human_path = human[0]
-    clip_id, seg = human_path.parent.name, human_path.stem
+    clip_id, seg = human_path.parent.name, human_path.name[:-len(suffix)]
     print(f"{root}: clip {clip_id}, segment {seg}")
     if len(human) > 1:
         print(f"  ({len(human)} segments here, showing the first)")
 
-    human_rows = report(human_path, "human table (stages 2-7)")
+    human_rows = report(human_path, title)
     report_hands(human_rows[len(human_rows) // 2])
 
     for robot_dir in sorted(d for d in root.iterdir() if d.is_dir() and d.name != "original"):
-        for sub, title in (("annot", "stage 9"), ("overlay/annot", "stage 10")):
+        for sub, title in (("annot", "stage 8"), ("overlay/annot", "stage 9")):
             path = robot_dir / sub / clip_id / f"{seg}.parquet"
             if path.is_file():
                 report(path, f"{robot_dir.name} table, {title}")

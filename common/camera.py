@@ -166,6 +166,23 @@ def early_stop_intrinsics(
 
 
 def intrinsics_selection(intrs):
-    # --- MAD 3σ outlier cutting + median ---
+    # --- MAD outlier cutting + median ---
     intrs = _stack_rows5(intrs)
     return mad_filter_median(intrs)
+
+
+def pinhole_from_row(row, where="row"):
+    """(fx, fy, cx, cy) of the undistorted frames, from the row's pinhole_* columns. A table
+    written without those columns gets the pinhole re-derived from its raw camera model."""
+    if row.get("pinhole_fx") is not None:
+        pinhole = [row["pinhole_fx"], row["pinhole_fy"], row["pinhole_cx"], row["pinhole_cy"]]
+    else:
+        frame_shape = (int(row["height"]), int(row["width"]))
+        raw = [row["fx"], row["fy"], row["cx"], row["cy"], row["xi"]]
+        need_undist = need_undistort(raw, frame_shape)
+        assert need_undist is not None, f"{where}: intrinsics {raw} cannot be undistorted"
+        pinhole = build_undistort_maps(frame_shape, raw, auto=True)[3] if need_undist else raw
+    fx, fy, cx, cy = (float(v) for v in pinhole[:4])
+    assert np.isfinite([fx, fy, cx, cy]).all() and fx > 0 and fy > 0, \
+        f"{where}: invalid pinhole {pinhole}"
+    return fx, fy, cx, cy

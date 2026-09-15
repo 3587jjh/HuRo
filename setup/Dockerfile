@@ -1,24 +1,12 @@
 # HuRo unified environment as a container: the image carries the fully-built python stack in a
 # venv at /opt/venv, no conda inside. Build needs no GPU: the CUDA extensions compile
 # ahead-of-time.
-# Neither the code nor the model weights are baked in: mount a checkout at /workspace and
-# download the weights into it.
+# Neither the code nor the model weights are baked in. setup/docker_run.sh runs the image with
+# the checkout's parent directory mounted at /workspace and the GPU, Vulkan and OptiX pieces
+# stage 9 needs (setup/README.md).
 #
 #   docker build -f setup/Dockerfile -t huro .
-#
-# Then run it against a checkout (setup/docker_run.sh wraps this):
-#
-# Run with the NVIDIA runtime and the host's Vulkan/OptiX pieces (stage 10 renders through
-# Isaac Sim and verifies this wiring before importing it):
-#
-#   docker run -it --gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 \
-#     --device /dev/dri \
-#     -v /usr/share/nvidia/nvoptix.bin:/usr/share/nvidia/nvoptix.bin:ro \
-#     -v /usr/share/vulkan/implicit_layer.d:/usr/share/vulkan/implicit_layer.d:ro \
-#     -e NVIDIA_DRIVER_CAPABILITIES=all \
-#     -e OMNI_KIT_ACCEPT_EULA=Y \
-#     -v /path/to/HuRo:/workspace -v /path/to/data:/data \
-#     huro
+#   ./setup/docker_run.sh
 #
 # First commands inside the container: ./setup/setup.sh dev && ./setup/setup.sh check
 FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
@@ -62,12 +50,12 @@ ENV CUDA_HOME=/usr/local/cuda \
     PIP_NO_CACHE_DIR=1
 
 # Build-time copy only. The image carries the environment, not the code. Mount a checkout
-# at /workspace to run (see setup/docker_run.sh). Its submodules must be fetched first.
+# to run (see setup/docker_run.sh). Its submodules must be fetched first.
 WORKDIR /build/huro
 COPY . .
 
 # Compute capabilities the extensions are compiled for. Unset, setup/setup.sh's own default
-# covers 6.0 through 9.0. Pass only the target GPU's capability to cut the build time
+# covers 7.5 through 12.0. Pass only the target GPU's capability to cut the build time
 # (docker build -f setup/Dockerfile --build-arg TORCH_CUDA_ARCH_LIST=8.9 -t huro .). Declared as
 # ARG, not ENV, so it applies to this build only and nothing leaks into the image.
 ARG TORCH_CUDA_ARCH_LIST

@@ -1,8 +1,8 @@
-# Stage 10 — robot overlay (Isaac Sim): renders the retargeted robot into each segment's
-# arm-removed video. Reads stage 9's parquet + stage 8's inpainted video. Writes the overlay
+# Stage 9: robot overlay (Isaac Sim). Renders the retargeted robot into each segment's
+# arm-removed video. Reads stage 8's parquet + stage 7's inpainted video. Writes the overlay
 # video + the parquet with a per-frame overlay_valid column.
 #
-#   CUDA_VISIBLE_DEVICES=0 python pipeline/stage10_robot_overlay.py \
+#   CUDA_VISIBLE_DEVICES=0 python pipeline/stage9_robot_overlay.py \
 #       --input_dir /path/to/clips --part 1/1 --no_tqdm
 import subprocess
 
@@ -24,19 +24,20 @@ import time
 # Isaac Sim is proprietary. Setting OMNI_KIT_ACCEPT_EULA=Y accepts NVIDIA's licence, so nothing
 # in this repository sets it. run_pipeline.sh checks for it and stops without it.
 # setup/docker_run.sh forwards the value already in the environment.
-if os.environ.get("OMNI_KIT_ACCEPT_EULA") != "Y":
+if os.environ.get("OMNI_KIT_ACCEPT_EULA", "").lower() not in ("y", "yes", "1"):
     raise RuntimeError(
-        "stage 10 renders through Isaac Sim, licensed under the NVIDIA Omniverse License "
+        "stage 9 renders through Isaac Sim, licensed under the NVIDIA Omniverse License "
         "Agreement (site-packages/isaacsim/LICENSE.txt). Read it, then set "
         "OMNI_KIT_ACCEPT_EULA=Y to accept."
     )
 
 # Process-level hang recovery: a supervisor relaunches the worker when its heartbeat file goes
 # stale (exit 86 = self-detected hang). Segments whose outputs are already on disk are skipped.
-_HEARTBEAT_ENV = "HURO_S10_HEARTBEAT"
+_HEARTBEAT_ENV = "HURO_S9_HEARTBEAT"
 _HANG_EXIT_CODE = 86
-_HANG_TIMEOUT = float(os.environ.get("HURO_S10_HANG_TIMEOUT", 1200))
-_MAX_RESTARTS = int(os.environ.get("HURO_S10_MAX_RESTARTS", 3))
+_HANG_TIMEOUT = float(os.environ.get("HURO_S9_HANG_TIMEOUT", 1200))
+_MAX_RESTARTS = int(os.environ.get("HURO_S9_MAX_RESTARTS", 3))
+_PR_SET_PDEATHSIG = 1   # prctl option from <linux/prctl.h>
 
 
 def _touch_heartbeat():
@@ -51,14 +52,22 @@ def _touch_heartbeat():
 
 
 def _supervise() -> int:
-    fd, heartbeat = tempfile.mkstemp(prefix="huro_s10_heartbeat_")
+    fd, heartbeat = tempfile.mkstemp(prefix="huro_s9_heartbeat_")
     os.close(fd)
     env = dict(os.environ, **{_HEARTBEAT_ENV: heartbeat})
+    # SIGTERM and SIGHUP leave through the finally below, as Ctrl+C does.
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, lambda s, _frame: sys.exit(128 + s))
+    libc = ctypes.CDLL(None, use_errno=True)
+    child = None
     try:
         for attempt in range(1, _MAX_RESTARTS + 2):
             os.utime(heartbeat, None)
+            # No terminal signal reaches the worker in its own session. The kernel kills it when
+            # the supervisor dies.
             child = subprocess.Popen([sys.executable] + sys.argv, env=env,
-                                     start_new_session=True)
+                                     start_new_session=True,
+                                     preexec_fn=lambda: libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL))
             returncode = None
             while returncode is None:
                 try:
@@ -71,6 +80,11 @@ def _supervise() -> int:
                         os.killpg(child.pid, signal.SIGKILL)
                         child.wait()
                         break
+            if returncode is not None and returncode < 0:
+                sig = -returncode
+                print(f"Error: Isaac Sim crashed (signal {sig}, {signal.strsignal(sig)}).",
+                      "Rerun with OVERLAY_NO_SUPPRESS=1 to see its output, and read the newest",
+                      "log under site-packages/isaacsim/kit/logs.", flush=True)
             if returncode is not None and returncode != _HANG_EXIT_CODE:
                 return returncode
             if returncode == _HANG_EXIT_CODE:
@@ -78,7 +92,16 @@ def _supervise() -> int:
                       f"(attempt {attempt}/{_MAX_RESTARTS + 1}).", flush=True)
         print("Error: the stage kept hanging after every restart.", flush=True)
         return 1
+    except KeyboardInterrupt:
+        return 130
     finally:
+        # A worker left running would keep writing beside a restarted run.
+        if child is not None and child.poll() is None:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            child.wait()
         os.unlink(heartbeat)
 
 
@@ -182,8 +205,8 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common.camera import build_undistort_maps, need_undistort
-from common.io import decode_row, mark_done, rows_to_parquet
+from common.camera import pinhole_from_row
+from common.io import decode_row, mark_done, remove_stale_temps, rows_to_parquet
 from common.paths import overlay_usd, partition
 from common.robot_config import load_robot_config, schema_metadata
 from common.video import save_video_task, validate_segment_outputs
@@ -244,20 +267,6 @@ def _render_timeout(timeout_seconds, label):
         timer.cancel()
 
 
-def pinhole_from_row(row):
-    """Undistorted pinhole (fx, fy, cx, cy) re-derived from the row's raw MEI intrinsics."""
-    frame_shape = (int(row["height"]), int(row["width"]))
-    mei = [row["fx"], row["fy"], row["cx"], row["cy"], row["xi"]]
-    if need_undistort(mei, frame_shape):
-        _, _, _, pinhole = build_undistort_maps(frame_shape, mei, auto=True)
-    else:
-        pinhole = mei
-    fx, fy, cx, cy = (float(v) for v in pinhole[:4])
-    assert np.isfinite([fx, fy, cx, cy]).all() and fx > 0 and fy > 0, \
-        f"invalid pinhole from raw MEI {mei}"
-    return fx, fy, cx, cy
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--robot_name', type=str, default='allex',
@@ -276,24 +285,27 @@ def main():
 
     robot_cfg = load_robot_config(args.robot_name)
     metadata = schema_metadata(robot_cfg)
-    hide_links = set(robot_cfg.config["overlay"].get("hide_link_names", []))
+    hide_links = set(robot_cfg.config["overlay"].get("hide_link_names") or [])
 
-    if osp.isdir(input_dir):
+    if osp.isdir(input_dir) or osp.isdir(input_dir + '_chunked'):
         chunked_root = input_dir + '_chunked'
-        # Enumerate stage 9's retargeted clips.
+        # Enumerate stage 8's retargeted clips.
         clip_ids = partition(sorted(
-            osp.basename(p) for p in glob.glob(osp.join(chunked_root, args.robot_name, 'annot', '*'))
-            if osp.isdir(p)), args.part)
+            osp.basename(p) for p in glob.glob(
+                osp.join(glob.escape(osp.join(chunked_root, args.robot_name, 'annot')), '*'))
+            if osp.isdir(p)), args.part, key=lambda c: c)
     else:
-        assert osp.isfile(input_dir) and input_dir.lower().endswith('.mp4')
+        assert osp.isfile(input_dir) and input_dir.lower().endswith('.mp4'), \
+            f"--input_dir {input_dir}: expected a clip directory, a path whose _chunked " \
+            f"sibling exists, or one .mp4 clip"
         chunked_root = osp.join(osp.dirname(input_dir), 'chunked')
         clip_ids = [osp.basename(input_dir)[:-4]]
     if not clip_ids:
         return
 
     robot_base = osp.join(chunked_root, args.robot_name)
-    state_annot_dir = osp.join(robot_base, 'annot')                     # stage 9
-    inpaint_video_dir = osp.join(chunked_root, 'original', 'video')     # stage 8
+    state_annot_dir = osp.join(robot_base, 'annot')                     # stage 8
+    inpaint_video_dir = osp.join(chunked_root, 'original', 'video')     # stage 7
     output_annot_dir = osp.join(robot_base, 'overlay', 'annot')
     output_video_dir = osp.join(robot_base, 'overlay', 'video')
 
@@ -305,6 +317,11 @@ def main():
     print(f'Processing {len(clip_ids)} clips (rest already done).')
     if not clip_ids:
         return
+    for clip_id in clip_ids:
+        stage8_done = osp.join(state_annot_dir, f"{clip_id}.done")
+        if not osp.exists(stage8_done):
+            raise RuntimeError(f"{stage8_done} does not exist: stage 8 has not finished {clip_id}, "
+                               f"or its marker is missing")
     os.makedirs(output_annot_dir, exist_ok=True)
     os.makedirs(output_video_dir, exist_ok=True)
 
@@ -317,7 +334,7 @@ def main():
         if not osp.exists(clip_annot_dir):
             mark_done(output_annot_dir, clip_id); continue
 
-        segment_parquets = sorted(glob.glob(osp.join(clip_annot_dir, '*.parquet')))
+        segment_parquets = sorted(glob.glob(osp.join(glob.escape(clip_annot_dir), '*.parquet')))
         if not segment_parquets:
             mark_done(output_annot_dir, clip_id); continue
 
@@ -325,23 +342,27 @@ def main():
         clip_out_video_dir = osp.join(output_video_dir, clip_id)
         os.makedirs(clip_out_annot_dir, exist_ok=True)
         os.makedirs(clip_out_video_dir, exist_ok=True)
+        remove_stale_temps(clip_out_annot_dir)   # temps of processes that have exited
+        remove_stale_temps(clip_out_video_dir)
 
         # Keep segments whose parquet and video are both intact. The validator deletes the rest.
         existing_stems = set()
         for stem in {osp.basename(f)[:-len('.parquet')]
-                     for f in glob.glob(osp.join(clip_out_annot_dir, '*.parquet'))} | \
+                     for f in glob.glob(osp.join(glob.escape(clip_out_annot_dir), '*.parquet'))} | \
                     {osp.basename(f)[:-len('.mp4')]
-                     for f in glob.glob(osp.join(clip_out_video_dir, '*.mp4'))}:
+                     for f in glob.glob(osp.join(glob.escape(clip_out_video_dir), '*.mp4'))}:
             if validate_segment_outputs(
                 annot_path=osp.join(clip_out_annot_dir, f'{stem}.parquet'),
                 video_path=osp.join(clip_out_video_dir, f'{stem}.mp4'),
             ):
                 existing_stems.add(stem)
 
-        # Isaac Sim is initialized once. Only the render product rebuilds on resolution change.
+        # Isaac Sim is initialized once. A resolution change only resizes the render product.
+        intr_cols = ["height", "width", "fx", "fy", "cx", "cy", "xi",
+                     "pinhole_fx", "pinhole_fy", "pinhole_cx", "pinhole_cy"]
+        present = set(pq.ParquetFile(segment_parquets[0]).schema_arrow.names)
         first_row = decode_row(pq.read_table(
-            segment_parquets[0],
-            columns=["height", "width", "fx", "fy", "cx", "cy", "xi"]).to_pylist()[0])
+            segment_parquets[0], columns=[c for c in intr_cols if c in present]).to_pylist()[0])
         clip_h, clip_w = int(first_row["height"]), int(first_row["width"])
         fx, fy, cx, cy = pinhole_from_row(first_row)
         clip_K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float64)
@@ -403,7 +424,7 @@ def main():
 
             inpaint_path = osp.join(inpaint_video_dir, clip_id, f'{seg_stem}_inpainted.mp4')
             if not osp.exists(inpaint_path):
-                continue
+                raise FileNotFoundError(f"{inpaint_path} is missing: stage 7 has not finished {clip_id}")
 
             frames_rgb = []
             with av.open(inpaint_path, "r") as reader:
@@ -459,14 +480,15 @@ def main():
                 print(f"Warning: {len(failed_indices)} render failures in {seg_stem} "
                       f"(frames {sorted(failed_indices)}) -> overlay_valid=False")
 
-            # First segment all black: Vulkan is broken despite the startup checks. Stop.
+            # Every frame of the first segment failed to render: Vulkan is broken despite the
+            # startup checks. Stop.
             if not smoke_tested:
                 smoke_tested = True
                 if len(failed_indices) == n_frames:
                     raise RuntimeError(
                         f"GPU rendering smoke test failed: {len(failed_indices)}/{n_frames} "
-                        f"frames of the first segment {seg_stem} are black, so Vulkan rendering "
-                        f"is not working despite the startup checks passing."
+                        f"frames of the first segment {seg_stem} failed to render, so Vulkan "
+                        f"rendering is not working despite the startup checks passing."
                     )
 
             out_rows = []
@@ -498,4 +520,14 @@ if __name__ == "__main__":
     if _wait > 0:
         print(f"Staggering Isaac Sim init: waiting {_wait:.0f}s", flush=True)
         time.sleep(_wait)
-    main()
+    sys.stdout.reconfigure(line_buffering=True)   # the log is often a pipe or a file
+    # The renderer points fd 2 at /dev/null while it runs, so an error is printed to a copy of it.
+    _stderr_fd = os.dup(2)
+    try:
+        main()
+    except Exception:
+        import traceback
+        with os.fdopen(_stderr_fd, "w") as err:
+            traceback.print_exc(file=err)
+        # Isaac Sim can crash while the interpreter shuts down after an error.
+        os._exit(1)

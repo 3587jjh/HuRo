@@ -1,4 +1,4 @@
-"""Stage-6 model wrappers: detectron2 ViTDet-H person detector + SAM2 video predictor.
+"""Model wrappers: detectron2 ViTDet-H person detector + SAM2 video predictor.
 detectron2 / sam2 / hydra are imported lazily inside the constructors."""
 # The predictor wrapper is adapted from detectron2's DefaultPredictor, Apache-2.0,
 # Copyright (c) Facebook, Inc. and its affiliates. The mask propagation loop is adapted from
@@ -84,7 +84,7 @@ class DetectorSam2:
                         state, frame_idx=int(idx), obj_id=int(obj_id), mask=mask)
                 else:
                     bbox, points = seed["bbox"], seed["points"]
-                    if bbox is None or np.all(bbox) == 0:
+                    if bbox is None or not np.any(np.asarray(bbox)):
                         self.video_predictor.add_new_points_or_box(
                             state, frame_idx=int(idx), obj_id=int(obj_id),
                             points=np.array(points), labels=np.ones(len(points)))

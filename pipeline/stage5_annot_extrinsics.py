@@ -1,4 +1,4 @@
-# Stage 5 — camera extrinsics (DROID-SLAM + MoGe-2 + GeoCalib).
+# Stage 5: camera extrinsics (DROID-SLAM + MoGe-2 + GeoCalib).
 # Reads stage 4's shards and fills cam_pose = metric, gravity-aligned cam-to-world in the
 # OpenCV convention (Z-forward, Y-down). Only valid frames get one.
 #
@@ -18,12 +18,12 @@ from tqdm import tqdm
 
 # repo root on sys.path so `common` is importable when run as a script
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common.paths import (partition, setup_extrinsics_imports, DROID_WEIGHTS,
+from common.paths import (partition, mp4_clip_id, setup_extrinsics_imports, DROID_WEIGHTS,
                           MOGE2_REPO, MOGE2_WEIGHTS, MOGE2_WEIGHTS_DIR, GEOCALIB_WEIGHTS)
 from common.camera import need_undistort, build_undistort_maps, undistort_apply
 from common.stats import gaussian_kernel, mad_filter_median
 from common.geometry import gaussian_slerp_smoothing
-from common.io import ParquetReader, write_clip_chunks, mark_done
+from common.io import ParquetReader, write_clip_chunks, mark_done, remove_clip_shards
 
 setup_extrinsics_imports()
 from droid import Droid                                   # hawor's DROID-SLAM frontend
@@ -144,8 +144,9 @@ def _preprocess_masks(masks_bool, slam_h, slam_w):
     return torch.cat(img_msks), torch.cat(conf_msks)
 
 
-def _run_slam_window(frames_bgr, masks_bool, calib, droid_args):
-    """Run DROID-SLAM on one window. Returns (traj, tstamp, disps) or None on failure."""
+def _run_slam_window(frames_bgr, masks_bool, calib, droid_args, label='window'):
+    """Run DROID-SLAM on one window. Returns (traj, tstamp, disps) or None on failure.
+    CUDA out of memory is raised, so the clip is not marked done."""
     h0, w0 = frames_bgr[0].shape[:2]
     slam_h, slam_w, _, _ = _get_slam_dims(h0, w0)
     img_msks, conf_msks = _preprocess_masks(masks_bool, slam_h, slam_w)
@@ -170,12 +171,18 @@ def _run_slam_window(frames_bgr, masks_bool, calib, droid_args):
         disps = droid.video.disps_up.cpu().numpy()[:n]
 
         return traj, tstamp, disps
+    except torch.OutOfMemoryError:
+        print(f'  {label}: CUDA out of memory in DROID-SLAM, stopping')
+        raise
     except TypeError as e:
-        raise TypeError(
-            f"DROID-SLAM ba() argument mismatch: the SLAM frontend passes more args than "
-            f"the compiled droid_backends.ba() accepts. The frontend must match the backend "
-            f"build (droid_backends comes from the droidcalib install). Original error: {e}"
-        ) from e
+        # pybind11's message when droid_backends.ba() rejects the arguments
+        if str(e).startswith('ba(): incompatible function arguments'):
+            raise TypeError(
+                f"DROID-SLAM ba() argument mismatch: the SLAM frontend passes more args than "
+                f"the compiled droid_backends.ba() accepts. The frontend must match the backend "
+                f"build (droid_backends comes from the droidcalib install). Original error: {e}"
+            ) from e
+        raise
     except RuntimeError as e:
         if 'no kernel image is available' in str(e):
             cc = torch.cuda.get_device_capability()
@@ -183,8 +190,10 @@ def _run_slam_window(frames_bgr, masks_bool, calib, droid_args):
                 f"droid_backends has no CUDA kernel for this GPU (sm_{cc[0]}{cc[1]}). "
                 f"Rebuild the droidcalib extension with this arch in TORCH_CUDA_ARCH_LIST."
             ) from e
+        print(f'  {label}: DROID-SLAM failed, skipping ({e!r})')
         return None
-    except Exception:
+    except Exception as e:
+        print(f'  {label}: DROID-SLAM failed, skipping ({e!r})')
         return None
     finally:
         if droid is not None:
@@ -285,9 +294,10 @@ def _calibrate_gravity_batch(geocalib_model, img_batch, focal_prior):
     return out["gravity"]
 
 
-def _predict_gravity_frames(frames_bgr, indices, geocalib_model, img_focal):
+def _predict_gravity_frames(frames_bgr, indices, geocalib_model, img_focal, label='window'):
     """GeoCalib on selected frame indices (batched) -> list of (local_idx, up_cam_3d).
-    "up" is in the OpenCV camera frame. Only downward-looking, |roll| <= 10deg frames are kept."""
+    "up" is in the OpenCV camera frame. Only downward-looking, |roll| <= 10deg frames are kept.
+    A failed batch is skipped, but CUDA out of memory is raised."""
     results = []
     if len(indices) == 0:
         return results
@@ -301,7 +311,11 @@ def _predict_gravity_frames(frames_bgr, indices, geocalib_model, img_focal):
             pitches = gravity.pitch.cpu().numpy()
             rolls = gravity.roll.cpu().numpy()
             vecs = gravity.vec3d.cpu().numpy()
-        except Exception:
+        except torch.OutOfMemoryError:
+            print(f'  {label}: CUDA out of memory in GeoCalib, stopping')
+            raise
+        except Exception as e:
+            print(f'  {label}: GeoCalib batch failed, skipping ({e!r})')
             continue
         for j, i in enumerate(chunk):
             if pitches[j] >= 0:
@@ -358,10 +372,11 @@ def _compute_R_gravity_align(up_world):
     return np.array([X, Y, Z_up], dtype=np.float64)  # rows = new basis
 
 
-def _apply_gravity_alignment(aligned_poses, up_per_frame, gap_fill=0):
+def _apply_gravity_alignment(aligned_poses, up_per_frame, gap_fill=0, label=''):
     """Per-segment gravity alignment from up-vector predictions, applied in-place
-    (each contiguous run may come from a different SLAM chain with its own world frame)."""
-    if not aligned_poses or not up_per_frame:
+    (each contiguous run may come from a different SLAM chain with its own world frame).
+    A segment whose up vector cannot be aggregated has its poses removed."""
+    if not aligned_poses:
         return
 
     segments = _split_into_segments(aligned_poses, gap_fill=gap_fill)
@@ -370,6 +385,10 @@ def _apply_gravity_alignment(aligned_poses, up_per_frame, gap_fill=0):
         fid_set = set(seg_fids)
         up_world = _aggregate_up_in_world(up_per_frame, aligned_poses, fid_set=fid_set)
         if up_world is None:
+            print(f'  {label}: frames {seg_fids[0]}-{seg_fids[-1]} have too few gravity predictions, '
+                  f'dropping their {len(seg_fids)} poses')
+            for fid in seg_fids:
+                del aligned_poses[fid]
             continue
 
         R_align = _compute_R_gravity_align(up_world)
@@ -480,19 +499,22 @@ def _slerp(R0, R1, t):
     return slerp([float(t)])[0].as_matrix()
 
 
-def _align_and_merge_windows(window_results):
+def _align_and_merge_windows(window_results, gap_fill=0):
     """Align overlapping windows and merge into a global frame_id → T_cam2world dict.
-    window_results: list of (global_frame_ids: list[int], T_cam2world: (T,4,4))."""
+    window_results: list of (global_frame_ids: list[int], T_cam2world: (T,4,4)), in frame order.
+    Each chain of aligned windows has its own world frame. A chain's frames within gap_fill + 1
+    of the previous chain are dropped, so segment splitting keeps the chains apart."""
     if not window_results:
         return {}
 
-    # Group into alignment chains (break on non-overlapping windows)
+    # Group into alignment chains (break when windows share fewer than 2 frames,
+    # the minimum for the Sim(3) alignment)
     chains = []
     current_chain = [0]
     for k in range(1, len(window_results)):
         prev_fids = set(window_results[k - 1][0])
         curr_fids = set(window_results[k][0])
-        if prev_fids & curr_fids:
+        if len(prev_fids & curr_fids) >= 2:
             current_chain.append(k)
         else:
             chains.append(current_chain)
@@ -502,6 +524,8 @@ def _align_and_merge_windows(window_results):
     global_poses = {}  # frame_id → list of (T_cam2world, weight)
 
     for chain in chains:
+        # frames before min_fid would fall into the previous chain's segment
+        min_fid = max(global_poses) + gap_fill + 2 if global_poses else 0
         aligned_Ts = {}  # window_idx → aligned (fids, T_array)
 
         for ci, widx in enumerate(chain):
@@ -522,14 +546,11 @@ def _align_and_merge_windows(window_results):
                         overlap_prev.append(prev_Ts[prev_map[f]])
                         overlap_curr.append(Ts[j])
 
-                if len(overlap_prev) < 2:
-                    aligned_Ts[widx] = (fids, Ts)
-                else:
-                    T_ref = np.stack(overlap_prev)
-                    T_src = np.stack(overlap_curr)
-                    s, T_align = _compute_alignment_transform(T_ref, T_src)
-                    Ts_aligned = _apply_sim3(s, T_align, Ts)
-                    aligned_Ts[widx] = (fids, Ts_aligned)
+                T_ref = np.stack(overlap_prev)
+                T_src = np.stack(overlap_curr)
+                s, T_align = _compute_alignment_transform(T_ref, T_src)
+                Ts_aligned = _apply_sim3(s, T_align, Ts)
+                aligned_Ts[widx] = (fids, Ts_aligned)
 
         # Merge with cosine weighting (peaks at window center, tapers at edges)
         for widx in chain:
@@ -539,6 +560,8 @@ def _align_and_merge_windows(window_results):
             half_len = n / 2.0
 
             for i, fid in enumerate(fids):
+                if fid < min_fid:
+                    continue
                 w = 0.5 * (1.0 + math.cos(math.pi * (i - center) / half_len))
                 w = max(w, 1e-6)
                 global_poses.setdefault(fid, []).append((Ts[i], w))
@@ -649,7 +672,7 @@ def main():
 
     if osp.isdir(input_dir):
         paths_mp4 = sorted(glob.glob(osp.join(input_dir, '*.mp4')))
-        paths_mp4 = partition(paths_mp4, args.part)
+        paths_mp4 = partition(paths_mp4, args.part, key=mp4_clip_id)
         if len(paths_mp4) == 0:
             return
         hand_dir = input_dir + '_hand'
@@ -693,8 +716,10 @@ def main():
     # ── process clips ──
     with torch.inference_mode():
         for path_mp4 in tqdm(paths_mp4, desc="clips", unit="clip", position=1,
-                             leave=True, dynamic_ncols=True):
+                             leave=True, dynamic_ncols=True, disable=args.no_tqdm):
             clip_id = osp.basename(path_mp4)[:-4]
+            # the clip has no .done, so its shards are written from scratch
+            remove_clip_shards(output_dir, clip_id)
 
             # Phase 1: read stage 4's shards (intrinsics + hand masks carried in)
             try:
@@ -726,7 +751,7 @@ def main():
                     continue
             img_focal = 0.5 * (intr[0] + intr[1])
 
-            # SLAM calibration (square pinhole at recentred principal point)
+            # SLAM calibration (square pinhole)
             calib = np.array([img_focal, img_focal, float(intr[2]), float(intr[3])], dtype=np.float64)
             fov_x = 2 * math.degrees(math.atan(image_w / (2 * img_focal)))
 
@@ -742,28 +767,34 @@ def main():
 
             def _process_one_window(win_frames, win_fids):
                 wi = len(window_results)
+                label = f'{clip_id} window {wi} (frames {win_fids[0]}-{win_fids[-1]})'
                 masks_bool = _build_masks(win_fids, hand_reader, frame_shape)
-                slam_result = _run_slam_window(win_frames, masks_bool, calib, _make_droid_args())
+                slam_result = _run_slam_window(win_frames, masks_bool, calib, _make_droid_args(), label)
                 if slam_result is None:
                     return None
                 traj, tstamp, disps = slam_result
                 # pose/frame count mismatch would misalign the merge -> skip window
                 if len(traj) != len(win_fids):
-                    print(f'  window {wi}: traj length {len(traj)} != frame count {len(win_fids)}, skipping')
+                    print(f'  {label}: traj length {len(traj)} != frame count {len(win_fids)}, skipping')
                     return None
                 scale = _estimate_scale(win_frames, tstamp, disps, masks_bool,
                                         moge2, fov_x, (slam_h, slam_w))
-                if math.isnan(scale):
+                if not math.isfinite(scale):
+                    return None
+                T_cam2world = _traj_to_T_cam2world(traj, scale)
+                # a non-finite pose would break the merge and the smoothing -> skip window
+                if not np.isfinite(T_cam2world).all():
+                    print(f'  {label}: non-finite camera pose, skipping')
                     return None
 
                 laps = _compute_laplacian_variance(win_frames)
                 sharp_idx = _select_sharp_frames(laps)
                 new_idx = np.array([i for i in sharp_idx if win_fids[i] not in up_per_frame], dtype=int)
-                up_results = _predict_gravity_frames(win_frames, new_idx, geocalib_model, img_focal)
+                up_results = _predict_gravity_frames(win_frames, new_idx, geocalib_model, img_focal, label)
                 for local_i, up_cam in up_results:
                     up_per_frame[win_fids[local_i]] = up_cam
 
-                return (win_fids, _traj_to_T_cam2world(traj, scale))
+                return (win_fids, T_cam2world)
 
             with av.open(path_mp4, "r") as reader:
                 s = reader.streams.video[0]
@@ -816,15 +847,13 @@ def main():
 
             del frame_buffer
 
-            # Phase 3: Align windows, smooth, optional gravity alignment
+            # Phase 3: Align windows, smooth, gravity alignment
             valid_results = [r for r in window_results if r is not None]
-            aligned_poses = _align_and_merge_windows(valid_results)
+            aligned_poses = _align_and_merge_windows(valid_results, gap_fill=args.gap_fill)
             _smooth_cam_poses(aligned_poses, gap_fill=args.gap_fill)
 
-            _apply_gravity_alignment(aligned_poses, up_per_frame, gap_fill=args.gap_fill)
-            # No valid gravity prediction (all positive pitch) → discard all poses
-            if not up_per_frame:
-                aligned_poses.clear()
+            # segments without enough valid gravity predictions lose their poses
+            _apply_gravity_alignment(aligned_poses, up_per_frame, gap_fill=args.gap_fill, label=clip_id)
 
             # Phase 4: Write stage 4's rows with cam_pose filled
             chunk_idx = 0

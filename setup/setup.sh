@@ -72,19 +72,19 @@ pip_stack() {
   # torch stack: isaacsim-core 5.1.0 requires exactly torch 2.7.0 / torchvision 0.22.0 / torchaudio 2.7.0
   pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128
 
-  # Isaac Sim 5.1.0 (stage 10) — several GB of kit + extension-cache wheels
+  # Isaac Sim 5.1.0 (stage 9): several GB of kit + extension-cache wheels
   pip install "isaacsim[all,extscache]==5.1.0" --extra-index-url https://pypi.nvidia.com
 
-  # JAX CUDA build (stage 9). Its nvidia-* floors are all >=, satisfied by torch's cu128 pin set
+  # JAX CUDA build (stage 8). Its nvidia-* floors are all >=, satisfied by torch's cu128 pin set
   pip install "jax[cuda12]==0.4.30"
 
-  # stage-7 narration stack (Qwen3.5 support is only in a transformers dev commit)
+  # stage-6 narration stack (Qwen3.5 support is only in a transformers dev commit)
   pip install "transformers @ git+https://github.com/huggingface/transformers.git@a91232af09f59e2e1c96561901c92e01e238c355"
   pip install qwen-vl-utils==0.0.14 accelerate==1.13.0 lemminflect==0.2.3
   # prebuilt wheel for torch 2.7/cu12/cp311, with --no-cache-dir for network-filesystem pip caches
   pip install flash-attn==2.8.3 --no-build-isolation --no-cache-dir
 
-  # stages 1-6, 8 pip deps
+  # stages 1-5 and 7 pip deps
   pip install kornia scikit-learn
   pip install evo --upgrade --no-binary evo
   pip install torch-scatter -f https://data.pyg.org/whl/torch-2.7.0+cu128.html
@@ -101,7 +101,7 @@ pip_stack() {
   # anycalib (pure python)
   ( cd submodules/anycalib && pip install . --no-build-isolation )
 
-  # stage-9 IK stack: pyroki/jaxls dependencies first, then the two --no-deps.
+  # stage-8 IK stack: pyroki/jaxls dependencies first, then the two --no-deps.
   # jaxls@50a58be declares jax>=0.6.0 but runs on 0.4.30. --no-deps keeps jax at 0.4.30.
   pip install "jax-dataclasses>=1.6.2" "jaxlie>=1.0.0" jaxtyping termcolor "typing-extensions>=4.5" \
     tyro robot_descriptions yourdfpy trimesh pyliblzfse
@@ -154,7 +154,7 @@ step_pip() {
 step_build() {
   activate_env
   echo "== CUDA extensions (nvcc $(nvcc --version | grep -oE 'release [0-9.]+')) =="
-  export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-6.0;6.1;7.0;7.5;8.0;8.6;8.9;9.0}"
+  export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-7.5;8.0;8.6;8.9;9.0;10.0;12.0}"
   export CUDA_HOME="${CUDA_HOME:-$CONDA_PREFIX}"
   export FORCE_CUDA=1
   export MAX_JOBS="${MAX_JOBS:-8}"
@@ -182,7 +182,7 @@ step_dev() {
   apply_patches
   activate_env
   export FORCE_CUDA=1 MAX_JOBS="${MAX_JOBS:-6}"
-  export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-6.0;6.1;7.0;7.5;8.0;8.6;8.9;9.0}"
+  export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-7.5;8.0;8.6;8.9;9.0;10.0;12.0}"
   echo "== editable re-install from $ROOT =="
   pip install -e submodules/pyroki --no-deps
   ( cd submodules/anycalib   && pip install -e . --no-build-isolation --no-deps )
@@ -207,8 +207,9 @@ import droid_backends; from droid import Droid; from moge.model.v2 import MoGeMo
 from lib.pipeline.est_scale import est_scale_hybrid; from geocalib import GeoCalib; print('  stage5 OK')"
   python -c "import torch, detectron2, sam2; import detectron2._C, sam2._C; \
 from pipeline.segmentation.detectors import DetectorDetectron2, DetectorSam2; \
-from detectron2.config import LazyConfig; from common.paths import DETECTRON_CFG; \
-LazyConfig.load(str(DETECTRON_CFG)); print('  stage6 OK')"
+from detectron2.config import LazyConfig; from common.paths import DETECTRON_CFG, setup_propainter_imports; \
+LazyConfig.load(str(DETECTRON_CFG)); setup_propainter_imports(); \
+from inference_propainter_custom import ProPainterInference; print('  stages 6-7 OK')"
   python -c "import torch, transformers, qwen_vl_utils, lemminflect, flash_attn; \
 from transformers import Qwen3_5ForConditionalGeneration, AutoProcessor; \
 from pipeline.captioning.caption import load_vlm_model, get_caption; \
@@ -221,40 +222,40 @@ print('  robot OK:', len(r.robot.joints.actuated_names), 'actuated joints')"
   # built without them give black frames or never finish rather than failing cleanly, so warn
   # here, because this is the step that runs where the GPU actually is.
   CAPS=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | tr -d ' ' | sort -u)
-  NO_RT=$(echo "$CAPS" | grep -xE '7\.0|8\.0|9\.0' | paste -sd' ' || true)
+  NO_RT=$(echo "$CAPS" | grep -xE '8\.0|9\.0|10\.0' | paste -sd' ' || true)
   if [ -n "$NO_RT" ]; then
     echo
     echo "  ##########################################################################"
     echo "  ##  WARNING: this GPU has no RT cores (compute capability $NO_RT)"
     echo "  ##"
-    echo "  ##  Stage 10 renders through Isaac Sim's RTX raytracer and cannot run"
-    echo "  ##  here: V100 (7.0), A100 (8.0) and H100 (9.0) produce black frames or"
+    echo "  ##  Stage 9 renders through Isaac Sim's RTX raytracer and cannot run"
+    echo "  ##  here: A100 (8.0), H100 (9.0) and B200 (10.0) produce black frames or"
     echo "  ##  never finish, rather than failing cleanly."
     echo "  ##"
-    echo "  ##  Stages 1-9 are unaffected. Set LAST_STAGE=9 in"
-    echo "  ##  run_pipeline.sh, or run stage 10 on an RTX card (L40S, RTX 4090,"
+    echo "  ##  Stages 1-8 are unaffected. Set LAST_STAGE=8 in"
+    echo "  ##  run_pipeline.sh, or run stage 9 on an RTX card (L40S, RTX 4090,"
     echo "  ##  A40, RTX 6000 Ada)."
     echo "  ##########################################################################"
     echo
   fi
 
-  # importing stage 10 runs its Vulkan/driver preflight before Isaac Sim. Isaac Sim is
+  # importing stage 9 runs its Vulkan/driver preflight before Isaac Sim. Isaac Sim is
   # proprietary: setting OMNI_KIT_ACCEPT_EULA=Y accepts NVIDIA's licence, so this script
   # does not set it. Without it the overlay probe is skipped, not auto-accepted.
-  if [ "${OMNI_KIT_ACCEPT_EULA:-}" = "Y" ]; then
-    python -c "import pipeline.stage10_robot_overlay; \
+  if [[ "${OMNI_KIT_ACCEPT_EULA,,}" =~ ^(y|yes|1)$ ]]; then
+    python -c "import pipeline.stage9_robot_overlay; \
 import isaacsim, torch, numpy, cv2; \
 assert hasattr(cv2, 'omnidir'); print('  overlay OK', torch.__version__, numpy.__version__)"
   else
-    echo "  overlay SKIPPED: stage 10 runs on Isaac Sim under the NVIDIA Omniverse License"
+    echo "  overlay SKIPPED: stage 9 runs on Isaac Sim under the NVIDIA Omniverse License"
     echo "    Agreement (site-packages/isaacsim/LICENSE.txt)."
     echo "    Read it, then re-run with OMNI_KIT_ACCEPT_EULA=Y to verify the overlay stack."
     SKIPPED_OVERLAY=1
   fi
   if [ -n "$NO_RT" ]; then
-    echo "== checks passed, but this GPU has no RT cores: stage 10 cannot run here (above) =="
+    echo "== checks passed, but this GPU has no RT cores: stage 9 cannot run here (above) =="
   elif [ -n "$SKIPPED_OVERLAY" ]; then
-    echo "== checks passed, except the overlay: stage 10 is NOT verified =="
+    echo "== checks passed, except the overlay: stage 9 is NOT verified =="
   else
     echo "== all checks passed =="
   fi

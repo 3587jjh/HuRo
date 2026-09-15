@@ -1,5 +1,5 @@
-# Stage 3 — track-consistent hand sides (BoT-SORT): pins one side per hand track.
-# Reads stage 2's shards and rewrites them with the refined sides, same schema.
+# Stage 3: track-consistent hand sides (BoT-SORT). Pins one side per hand track.
+# Reads stage 2's shards and writes new shards with the refined sides, same schema.
 #
 #   python pipeline/stage3_annot_contact_refine.py \
 #       --input_dir /path/to/clips --part 1/1 --no_tqdm
@@ -17,9 +17,9 @@ from pathlib import Path
 
 # repo root on sys.path so `common` is importable when run as a script
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common.paths import partition
+from common.paths import partition, mp4_clip_id
 from common.camera import need_undistort, build_undistort_maps, undistort_apply
-from common.io import ParquetReader, write_clip_chunks, mark_done
+from common.io import ParquetReader, write_clip_chunks, mark_done, remove_clip_shards
 
 
 def create_tracker(frame_rate=30):
@@ -54,7 +54,7 @@ def create_tracker(frame_rate=30):
     return BOTSORT_CUSTOM(tracker_args, frame_rate=frame_rate)
 
 
-# Mimic YOLO's Results class so BoT-SORT can consume our detections.
+# Mimic YOLO's Boxes class so BoT-SORT can consume our detections.
 class MockResults:
     def __init__(self, boxes_xyxy, scores, classes):
         boxes_xyxy = np.asarray(boxes_xyxy, dtype=np.float32)
@@ -111,7 +111,7 @@ def main():
 
     if osp.isdir(input_dir):
         paths_mp4 = sorted(glob.glob(osp.join(input_dir, '*.mp4')))
-        paths_mp4 = partition(paths_mp4, args.part)
+        paths_mp4 = partition(paths_mp4, args.part, key=mp4_clip_id)
         if len(paths_mp4) == 0: return
         contact_dir = input_dir + '_contact'
         output_dir = input_dir + '_contact_refined'
@@ -137,8 +137,11 @@ def main():
     if len(paths_mp4) == 0: return
     os.makedirs(output_dir, exist_ok=True)
 
-    for path_mp4 in tqdm(paths_mp4, desc="clips", unit="clip", position=1, leave=True, dynamic_ncols=True):
+    for path_mp4 in tqdm(paths_mp4, desc="clips", unit="clip", position=1, leave=True, dynamic_ncols=True,
+                         disable=args.no_tqdm):
         clip_id = osp.basename(path_mp4)[:-4]
+        # shards left by an unfinished run of this clip would be read together with this run's
+        remove_clip_shards(output_dir, clip_id)
 
         # read stage 2's contact shards (intrinsics carried as columns)
         try: hos_reader = ParquetReader(contact_dir, clip_id)
@@ -159,7 +162,7 @@ def main():
 
         ############################################################################################
         tracker = create_tracker(frame_rate=30)  # assume 30 fps
-        track_stats = {} # tid -> { 'frame_ids': [...], 'hand_indices': [...], 'right_probs': [...] }
+        track_stats = {} # tid -> per-track lists
         tid_offset = 0
 
         with av.open(path_mp4, "r") as reader:

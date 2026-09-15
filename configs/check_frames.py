@@ -8,7 +8,7 @@ directory for the conventions. Every `want` in the output should come out satisf
 
 It needs numpy, PyYAML and the URDF's own XML, and neither jax nor Isaac, so it runs anywhere
 the repo is checked out. Besides the frames it checks the finger keypoint spacing and the home
-pose. Stage 9 validates the joint lists.
+pose. Stage 8 validates the joint lists.
 """
 import sys
 import xml.etree.ElementTree as ET
@@ -204,7 +204,7 @@ def main(robot_name):
         print(f"    ok   every home value is inside its joint limits")
     # Fingers legitimately rest at one end of their range (an open hand), so only the
     # non-hand groups are worth flagging. A straight arm at its stop is the real mistake.
-    hand = {n for g in config.get("hand_groups", []) for n in config["joints"].get(g, [])}
+    hand = {n for g in config.get("hand_groups") or [] for n in config["joints"].get(g, [])}
     arm_on_edge = [n for n in on_edge if n in active and n not in hand]
     n_arm = len(active - hand)
     print(f"    {'warn' if arm_on_edge else 'ok  '} {len(arm_on_edge)} of {n_arm} driven "

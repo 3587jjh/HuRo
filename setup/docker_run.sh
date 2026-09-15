@@ -9,7 +9,7 @@
 #   docker attach huro     # same thing
 #   docker rm -f huro      # start over
 #
-# Stage 10 needs OMNI_KIT_ACCEPT_EULA=Y, which accepts NVIDIA's Omniverse licence. This
+# Stage 9 needs OMNI_KIT_ACCEPT_EULA=Y, which accepts NVIDIA's Omniverse licence. This
 # script forwards the value from the calling shell rather than accepting the licence
 # itself. The container bakes the value in at creation, so export it
 # BEFORE the first run:  export OMNI_KIT_ACCEPT_EULA=Y && ./setup/docker_run.sh

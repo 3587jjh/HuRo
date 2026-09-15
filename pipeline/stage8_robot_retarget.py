@@ -1,9 +1,9 @@
-# Stage 9 — robot retargeting (PyRoKi IK): human hand keypoints -> robot joint angles + EEF.
+# Stage 8: robot retargeting (PyRoKi IK). Human hand keypoints -> robot joint angles + EEF.
 # Reads stage 7's per-segment parquets and writes one parquet per segment (state_qpos, EEF,
 # masks, diagnostics). Adds cam_pose_base = cam-to-robot-base (OpenCV, robot at the origin).
 # cam_pose keeps stage 5's cam-to-world.
 #
-#   CUDA_VISIBLE_DEVICES=0 python pipeline/stage9_robot_retarget.py \
+#   CUDA_VISIBLE_DEVICES=0 python pipeline/stage8_robot_retarget.py \
 #       --input_dir /path/to/clips --part 1/1 --no_tqdm
 import os, sys
 
@@ -24,7 +24,7 @@ import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common.paths import partition
-from common.io import decode_row, hand_for_side, rows_to_parquet, mark_done
+from common.io import decode_row, hand_for_side, rows_to_parquet, mark_done, remove_stale_temps
 from common.geometry import interpolate_cam_poses
 from common.robot_config import load_robot_config, schema_metadata
 from common.video import validate_segment_outputs
@@ -258,14 +258,14 @@ class ActionCalculator:
     """Retargets segments and derives robot state, EEF, ghost camera and diagnostics."""
 
     def __init__(self, robot_cfg, state_slices: Dict, smooth_sigma: float = 1.0,
-                 max_wrist_speed: float = 4.0, max_seq_len: int = 224):
+                 max_wrist_speed: float = 4.0, pad_lens=(224, 1024, 3072)):
         self._robot_cfg = robot_cfg
         self._state_slices = state_slices
         self._retargeter = None
         self._workspace_anchors = None
         self._smooth_sigma = smooth_sigma
         self._max_wrist_speed = max_wrist_speed
-        self._max_seq_len = max_seq_len
+        self._pad_lens = tuple(sorted(pad_lens))
 
     @property
     def retargeter(self):
@@ -299,8 +299,10 @@ class ActionCalculator:
         from pipeline.retargeting.retargeter import offset_4dof_to_se3, se3_to_offset_4dof
 
         T = left_kpts_cf.shape[0]
-        assert T <= self._max_seq_len, \
-            f"Segment length {T} exceeds max_seq_len {self._max_seq_len}"
+        assert T <= self._pad_lens[-1], \
+            f"Segment length {T} exceeds the longest padding length {self._pad_lens[-1]}"
+        # IK pads to the shortest length that fits. Each length compiles once per process.
+        pad_len = next(n for n in self._pad_lens if T <= n)
 
         cam_poses = np.asarray(cam_poses, dtype=np.float64)
         assert cam_poses.shape == (T, 4, 4)
@@ -320,7 +322,7 @@ class ActionCalculator:
         right_weights = downweight_outlier_frames(
             right_filled, right_valid, max_speed_mps=self._max_wrist_speed)
 
-        # Analytical stance guess to warm-start stage 1
+        # Analytical stance guess to warm-start the offset solve
         mode = determine_mode(left_valid, right_valid)
         centroid_world = compute_wrist_centroid_in_world(
             left_kpts_cf, right_kpts_cf, left_valid, right_valid, cam_poses, mode=mode)
@@ -340,7 +342,7 @@ class ActionCalculator:
                 target_cam_poses_world=cam_poses.astype(np.float32),
                 cam_valid=cam_valid,
                 initial_offset_4dof=initial_offset_4dof,
-                max_seq_len=self._max_seq_len,
+                max_seq_len=pad_len,
             )
 
         import jax.numpy as jnp
@@ -398,6 +400,16 @@ class ActionCalculator:
         local_dir = self.retargeter.compute_local_dir_error(
             robot_local, target_local_base, local_kpt_mask)
 
+        # A side with no valid frame at all has no target to measure, so its errors are NaN.
+        if np.all(~left_valid):
+            err_global[:, :5] = np.nan
+            err_palm[:, 0] = np.nan
+            local_dir[:, 0] = np.nan
+        if np.all(~right_valid):
+            err_global[:, 5:] = np.nan
+            err_palm[:, 1] = np.nan
+            local_dir[:, 1] = np.nan
+
         # Joint acceleration, edge-copied at boundaries
         err_ddq = np.zeros_like(state_qpos, dtype=np.float32)
         if T > 2:
@@ -447,8 +459,9 @@ def main():
                         help='Drop segments shorter than this many frames')
     parser.add_argument('--max_wrist_speed', type=float, default=4.0,
                         help='Wrist speed (m/s) above which a frame is downweighted')
-    parser.add_argument('--max_seq_len', type=int, default=224,
-                        help='IK padding length. A segment must not exceed it')
+    parser.add_argument('--pad_lens', type=int, nargs='+', default=[224, 1024, 3072],
+                        help='IK padding lengths. A segment pads to the shortest that fits, '
+                             'and a longer one is dropped')
     parser.add_argument('--wrist_dist_thr', type=float, default=0.9,
                         help='Wrong-hand filter: median wrist-to-camera distance (m)')
     parser.add_argument('--yaw_delta_thr', type=float, default=20.0,
@@ -461,14 +474,16 @@ def main():
     robot_cfg = load_robot_config(args.robot_name)
     metadata = schema_metadata(robot_cfg)
 
-    if osp.isdir(input_dir):
+    if osp.isdir(input_dir) or osp.isdir(input_dir + '_chunked'):
         chunked_root = input_dir + '_chunked'
-        # Enumerate stage 7's chunked clips.
+        # Enumerate the chunked clips.
         clip_ids = partition(sorted(
             osp.basename(p) for p in glob.glob(osp.join(chunked_root, 'original', 'annot', '*'))
-            if osp.isdir(p)), args.part)
+            if osp.isdir(p)), args.part, key=lambda c: c)
     else:
-        assert osp.isfile(input_dir) and input_dir.lower().endswith('.mp4')
+        assert osp.isfile(input_dir) and input_dir.lower().endswith('.mp4'), \
+            (f"--input_dir {input_dir}: expected a clips directory, a path whose "
+             f"{input_dir}_chunked directory exists, or one .mp4 file")
         chunked_root = osp.join(osp.dirname(input_dir), 'chunked')
         clip_ids = [osp.basename(input_dir)[:-4]]
     if len(clip_ids) == 0:
@@ -492,7 +507,7 @@ def main():
         state_slices=robot_cfg.state_slices,
         smooth_sigma=args.smooth_sigma,
         max_wrist_speed=args.max_wrist_speed,
-        max_seq_len=args.max_seq_len,
+        pad_lens=args.pad_lens,
     )
 
     for clip_id in tqdm(clip_ids, desc="clips", unit="clip", position=1, leave=True,
@@ -501,14 +516,20 @@ def main():
         if not osp.exists(clip_annot_dir):
             mark_done(output_annot_dir, clip_id); continue
 
-        segment_parquets = sorted(glob.glob(osp.join(clip_annot_dir, '*.parquet')))
+        segment_parquets = sorted(p for p in glob.glob(osp.join(clip_annot_dir, '*.parquet'))
+                                  if not p.endswith('_narr.parquet'))
+        narr_only = sorted(p for p in glob.glob(osp.join(clip_annot_dir, '*_narr.parquet'))
+                           if not osp.exists(p[:-len('_narr.parquet')] + '.parquet'))
+        assert not narr_only, \
+            f"{narr_only[0]} has no <seg>.parquet beside it: stage 7 has not finished {clip_id}"
         if not segment_parquets:
             mark_done(output_annot_dir, clip_id); continue
 
         clip_output_dir = osp.join(output_annot_dir, clip_id)
         os.makedirs(clip_output_dir, exist_ok=True)
+        remove_stale_temps(clip_output_dir)
 
-        # Keep valid existing segments. The validator deletes corrupt ones (crash mid-write).
+        # Keep valid existing segments. The validator deletes corrupt ones.
         existing_stems = {
             osp.basename(f)[:-len('.parquet')]
             for f in glob.glob(osp.join(clip_output_dir, '*.parquet'))
@@ -527,13 +548,11 @@ def main():
             T = len(rows)
 
             if T < args.min_seq_len:
-                if not args.no_tqdm:
-                    tqdm.write(f"  [FILTERED] {seg_stem}: too short ({T} < {args.min_seq_len})")
+                tqdm.write(f"  [FILTERED] {seg_stem}: too short ({T} < {args.min_seq_len})")
                 continue
 
-            if T > args.max_seq_len:
-                if not args.no_tqdm:
-                    tqdm.write(f"  [FILTERED] {seg_stem}: too long ({T} > {args.max_seq_len})")
+            if T > max(args.pad_lens):
+                tqdm.write(f"  [FILTERED] {seg_stem}: too long ({T} > {max(args.pad_lens)})")
                 continue
 
             left_kpts = np.zeros((T, 21, 3), dtype=np.float32)
@@ -566,9 +585,8 @@ def main():
             is_drifted, cam_drift = check_camera_drift(
                 cam_arr, cam_valid, cam_drift_thr=args.cam_drift_thr)
             if is_drifted:
-                if not args.no_tqdm:
-                    tqdm.write(f"  [FILTERED] {seg_stem}: camera drift "
-                               f"({cam_drift:.2f}m > {args.cam_drift_thr}m)")
+                tqdm.write(f"  [FILTERED] {seg_stem}: camera drift "
+                           f"({cam_drift:.2f}m > {args.cam_drift_thr}m)")
                 continue
 
             result = calculator.process_segment(
@@ -581,9 +599,8 @@ def main():
                 yaw_delta_thr=args.yaw_delta_thr,
             )
             if is_outlier:
-                if not args.no_tqdm:
-                    tqdm.write(f"  [FILTERED] {seg_stem}: wrong-hand outlier "
-                               f"(wrist_dist={median_wd:.3f}, yaw_delta={yaw_delta:.1f}deg)")
+                tqdm.write(f"  [FILTERED] {seg_stem}: wrong-hand outlier "
+                           f"(wrist_dist={median_wd:.3f}, yaw_delta={yaw_delta:.1f}deg)")
                 continue
 
             state_eef = result["state_eef"]
@@ -599,6 +616,8 @@ def main():
                     "intr_model": row.get("intr_model"),
                     "fx": row.get("fx"), "fy": row.get("fy"),
                     "cx": row.get("cx"), "cy": row.get("cy"), "xi": row.get("xi"),
+                    "pinhole_fx": row.get("pinhole_fx"), "pinhole_fy": row.get("pinhole_fy"),
+                    "pinhole_cx": row.get("pinhole_cx"), "pinhole_cy": row.get("pinhole_cy"),
                     # World pose carried through unchanged. The rebased one is dense
                     # (gaps interpolated) and lives in its own column.
                     "cam_pose": row.get("cam_pose"),
@@ -631,6 +650,8 @@ def main():
 if __name__ == "__main__":
     import signal
     # JAX can SIGABRT tearing down its CUDA context at exit. Work is already on disk by then.
-    signal.signal(signal.SIGABRT, lambda *_: os._exit(0))
+    signal.signal(signal.SIGABRT, lambda *_: (sys.stdout.flush(), sys.stderr.flush(), os._exit(0)))
     main()
+    sys.stdout.flush()
+    sys.stderr.flush()
     os._exit(0)

@@ -75,13 +75,13 @@ fetch submodules/geocalib/checkpoints/pinhole.tar ca068f68f7f62c7fc1b64c33a88836
 fetch submodules/moge-2/checkpoints/moge-2-vitl-normal/model.pt 4217c2b75880ae93aac615845a9101af \
   https://huggingface.co/Ruicheng/moge-2-vitl-normal/resolve/main/model.pt
 
-echo "== stage 6: Detectron2 ViTDet-H + SAM 2 =="
+echo "== stages 6-7: Detectron2 ViTDet-H + SAM 2 =="
 fetch submodules/detectron2/checkpoints/model_final_f05665.pkl f05665c9b95a34ceeba32316800c5e11 \
   https://dl.fbaipublicfiles.com/detectron2/ViTDet/COCO/cascade_mask_rcnn_vitdet_h/f328730692/model_final_f05665.pkl
 fetch submodules/sam2/checkpoints/sam2_hiera_large.pt 08083462423be3260cd6a5eef94dc01c \
   https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt
 
-echo "== stage 8: ProPainter =="
+echo "== stage 7: ProPainter =="
 fetch submodules/propainter/weights/raft-things.pth 55b58de5d9022eb37893916d246e14a3 \
   https://github.com/sczhou/ProPainter/releases/download/v0.1.0/raft-things.pth
 fetch submodules/propainter/weights/recurrent_flow_completion.pth 2879dbdd08fa50c656ff3ff1659dd660 \
@@ -92,7 +92,7 @@ fetch submodules/propainter/weights/ProPainter.pth 83e3941395917f6c1943dcf2f7655
 echo "== done =="
 [ -s submodules/hawor/_DATA/data/mano/MANO_RIGHT.pkl ] && [ -s submodules/hawor/_DATA/data_left/mano_left/MANO_LEFT.pkl ] \
   || echo "REMINDER: the MANO models are still missing (registration required, see the header of this script)"
-echo "The stage-7 Qwen3.5-9B VLM (~18 GB) downloads itself into \$HF_HOME on first run. To pre-fetch: hf download Qwen/Qwen3.5-9B"
+echo "The stage-6 Qwen3.5-9B VLM (~18 GB) downloads itself into \$HF_HOME on first run. To pre-fetch: hf download Qwen/Qwen3.5-9B"
 
 if [ ${#FAILED[@]} -gt 0 ]; then
   echo

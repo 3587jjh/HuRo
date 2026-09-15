@@ -1,11 +1,11 @@
-# weights / large binaries (submodule weights live in their own working trees;
-# the stage-7 Qwen3.5 VLM lives in the user's HF cache — neither is in this repo)
+# weights / large binaries. Submodule weights live in their own working trees. The stage-6
+# Qwen3.5 VLM lives in the user's HF cache. Neither is in this repo.
 *.pt
 *.pth
 *.safetensors
 *.ckpt
 *.onnx
-# a custom robot's meshes; its URDF, under assets/ beside them, is small enough to track
+# a custom robot's meshes. Its URDF, in assets/<robot>/urdf/, is small enough to track
 assets/*/meshes/
 # build artifacts
 build/
@@ -39,3 +39,7 @@ build/
 # single-clip runs (--input_dir <clip>.mp4) write these beside the clip instead
 examples/clips/intr/
 examples/clips/contact/
+examples/clips/contact_refined/
+examples/clips/hand/
+examples/clips/extr/
+examples/clips/chunked/

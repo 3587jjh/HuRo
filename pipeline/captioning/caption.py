@@ -126,11 +126,15 @@ def _build_vlm_inputs(frames_uint8: List[np.ndarray], user_text: str, system_pro
                       force_json_prefix: bool = False,
                       fps: Optional[float] = None):
     """Build VLM inputs: frames as native video.
-    Frames are already subsampled externally, so no fps-based resampling is needed."""
+    Frames are already subsampled externally, so no fps-based resampling is needed.
+    `fps` is the rate of the given frames and sets their '<t seconds>' timestamps."""
     processor = _vlm_processor
     assert _vlm_model is not None and processor is not None, "Call load_vlm_model() first"
 
     video_object = np.stack(frames_uint8, axis=0)  # (T, H, W, C) uint8
+    # The '<t seconds>' timestamps come from video_metadata. Without it the processor assumes 24 fps
+    video_kwargs = {} if fps is None else {"video_metadata": [
+        {"fps": fps, "total_num_frames": len(video_object), "frames_indices": list(range(len(video_object)))}]}
 
     messages = [
         {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
@@ -148,7 +152,7 @@ def _build_vlm_inputs(frames_uint8: List[np.ndarray], user_text: str, system_pro
         add_generation_prompt=True,
         enable_thinking=enable_thinking,
         do_sample_frames=False,  # frames already subsampled externally
-        **({"fps": fps} if fps is not None else {}),
+        **video_kwargs,
     )
 
     # Force JSON start: append '{"think":"' tokens so the model continues from there
@@ -921,6 +925,7 @@ def get_caption(
     _dbg(f"[DEBUG] visual gate: {n_post_visual_gate}/{len(text_survivors)} passed", window_log)
 
     # ── Stage 5: Global any-reject gate (window-level, any single hit = drop) ──
+    global_any_hit = None
     if visual_survivors:
         global_any_hit = _global_any_reject_gate(text_reject_reasons, visual_reject_reasons)
         if global_any_hit:
@@ -1035,7 +1040,9 @@ def get_caption(
     if visual_survivors or any_gates_ran:
         all_na = {"think": "", "left": "n/a", "right": "n/a", "bimanual": "n/a"}
         if tracker:
-            tracker.passed()
+            # No segment is written for this window
+            tracker.reject(global_any_hit or "all_na_after_gates", clip_id=clip_id, window=window,
+                           detail=f"rejects={reject_counts}")
             tracker.log_selection(
                 clip_id=clip_id, window=window,
                 field_winners={"left": None, "right": None, "bimanual": None},

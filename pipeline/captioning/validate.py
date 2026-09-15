@@ -4,10 +4,17 @@ from typing import Dict, List, Optional, Tuple
 from lemminflect import getLemma
 
 
+# Base verbs kept as they are. lemminflect's first lemma for each is another verb
+_KEEP_BASE_VERBS = frozenset({"lay", "saw", "bore"})
+
+
 def _to_base_verb(word: str) -> str:
     """Convert a word to its base verb form using lemminflect."""
-    lemmas = getLemma(word.lower(), upos="VERB")
-    return lemmas[0] if lemmas else word.lower()
+    w = word.lower()
+    if w in _KEEP_BASE_VERBS:
+        return w
+    lemmas = getLemma(w, upos="VERB")
+    return lemmas[0] if lemmas else w
 
 
 _NA_PHRASES = frozenset({
@@ -192,6 +199,13 @@ _BIMANUAL_REJECT_PATTERNS = (
 )
 
 
+def _has_hand_pattern(text: str, patterns) -> bool:
+    """Space-padded patterns (" while ") match anywhere. Other patterns match whole words with an
+    optional plural s, so "left hand" matches "left hands" but not "left handle"."""
+    return any(pat in text if pat.startswith(" ") else re.search(r"\b" + re.escape(pat) + r"s?\b", text)
+               for pat in patterns)
+
+
 def _extract_obj_tokens(words):
     """Extract object tokens from verb phrase, skipping verb + particles."""
     j = 1
@@ -292,6 +306,15 @@ def _is_verb_like(token: str) -> bool:
     return bool(lemmas)
 
 
+def _starts_verb_phrase_after_and(words: List[str], first_verb: str) -> bool:
+    """Whether the words after " and " start an action. After a base-form first verb, a word
+    ending in -ing starts a noun ("chopping board"), not an action."""
+    if len(words) < 2:
+        return False
+    first = first_verb.lower()
+    return not (words[0].lower().endswith("ing") and first in getLemma(first, upos="VERB"))
+
+
 def _split_chunk_by_and(chunk: str) -> Optional[List[str]]:
     """Split a comma-free chunk by ' and ' with all-or-nothing guards.
     If any resulting phrase fails a guard, the whole chunk stays one phrase.
@@ -314,6 +337,8 @@ def _split_chunk_by_and(chunk: str) -> Optional[List[str]]:
         if len(words) < 2:
             return [chunk]
         if i > 0:
+            if not _starts_verb_phrase_after_and(words, parts[0].split()[0]):
+                return [chunk]
             prev_words = parts[i - 1].split()
             if prev_words[-1].lower() in _FOOD_NOUNS and words[0].lower() in _FOOD_NOUNS:
                 return [chunk]
@@ -441,20 +466,21 @@ def normalize_caption(s: str) -> str:
             return "n/a"
         phrases = [s]
 
-    # --- Per-phrase: lemmatize first verb ---
-    phrases = [lemmatize_first_verb(p) for p in phrases]
-
     # --- Per-phrase: lemmatize conjugated verbs after "and" in unsplit compounds ---
+    # Runs before the first verb is lemmatized, because it reads that verb as written
     def lemmatize_and_verbs(phrase: str) -> str:
         if " and " not in phrase:
             return phrase
         left, right = phrase.split(" and ", 1)
         rw = right.strip().split()
-        if rw:
+        if _starts_verb_phrase_after_and(rw, left.split()[0]):
             rw[0] = _to_base_verb(rw[0])
         return left + " and " + " ".join(rw)
 
     phrases = [lemmatize_and_verbs(p) for p in phrases]
+
+    # --- Per-phrase: lemmatize first verb ---
+    phrases = [lemmatize_first_verb(p) for p in phrases]
 
     # --- Per-phrase: strip "with ..." instrumental suffix ---
     phrases = [_strip_with_suffix(p) for p in phrases]
@@ -845,7 +871,7 @@ def normalize_and_validate_perhand(narr_dict: Dict[str, str], return_drops: bool
         # Pre-split lexical pattern checks (cheapest filter first)
         val_lower = val_clean.lower()
         if key in ("left", "right"):
-            if any(pat in val_lower for pat in _CROSS_HAND_PATTERNS):
+            if _has_hand_pattern(val_lower, _CROSS_HAND_PATTERNS):
                 result[key] = "n/a"
                 all_drops[key] = [(-1, val_clean, "cross_hand_leakage")]
                 continue
@@ -999,7 +1025,7 @@ def normalize_and_validate_perhand(narr_dict: Dict[str, str], return_drops: bool
     # Bimanual hand-reference check
     if result["bimanual"] != "n/a":
         bi_lower = result["bimanual"].lower()
-        if any(ref in bi_lower for ref in _HAND_REFS):
+        if _has_hand_pattern(bi_lower, _HAND_REFS):
             all_drops.setdefault("bimanual", []).append((-1, result["bimanual"], "bimanual_hand_ref"))
             result["bimanual"] = "n/a"
 
@@ -1304,7 +1330,7 @@ def postcheck_assembled_triplet(
     for side in ("left", "right"):
         if result.get(side, "n/a") != "n/a":
             side_lower = result[side].lower()
-            if any(pat in side_lower for pat in _CROSS_HAND_PATTERNS):
+            if _has_hand_pattern(side_lower, _CROSS_HAND_PATTERNS):
                 meta[f"{side}_dropped"] = True
                 meta[f"{side}_drop_reason"] = "postcheck_cross_hand_leakage"
                 result[side] = "n/a"
@@ -1313,7 +1339,7 @@ def postcheck_assembled_triplet(
     if result.get("bimanual", "n/a") != "n/a":
         # 1. Hand-reference check (hard drop)
         bi_lower = result["bimanual"].lower()
-        if any(ref in bi_lower for ref in _HAND_REFS):
+        if _has_hand_pattern(bi_lower, _HAND_REFS):
             meta["bimanual_dropped"] = True
             meta["bimanual_drop_reason"] = "postcheck_bimanual_hand_ref"
             result["bimanual"] = "n/a"

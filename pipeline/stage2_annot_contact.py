@@ -1,6 +1,7 @@
-# Stage 2 — per-frame hand detection (100DoH Faster R-CNN).
+# Stage 2: per-frame hand detection (100DoH Faster R-CNN).
 # Detects hands (box, conf, side) per undistorted frame -> chunked Parquet, with the stage-1
-# raw intrinsics carried as columns. Frames with no detected hand are dropped.
+# raw intrinsics and the undistorted frames' pinhole carried as columns. Frames with no
+# detected hand are dropped.
 #
 #   CUDA_VISIBLE_DEVICES=0 python pipeline/stage2_annot_contact.py \
 #       --input_dir /path/to/clips --part 1/1 --no_tqdm
@@ -22,9 +23,9 @@ from pathlib import Path
 
 # repo root on sys.path so `common` is importable when run as a script
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common.paths import partition, CONTACT_CFG, CONTACT_WEIGHTS
+from common.paths import partition, mp4_clip_id, CONTACT_CFG, CONTACT_WEIGHTS
 from common.camera import need_undistort, build_undistort_maps, undistort_apply
-from common.io import write_clip_chunks, mark_done
+from common.io import write_clip_chunks, mark_done, remove_clip_shards
 
 # 100DoH model package with its CUDA ops, pip-installed from submodules/100doh/lib
 from model.utils.config import cfg, cfg_from_file
@@ -134,14 +135,16 @@ def main():
 
     if os.path.isdir(args.input_dir):
         paths_mp4 = sorted(glob.glob(os.path.join(args.input_dir, '*.mp4')))
-        paths_mp4 = partition(paths_mp4, args.part)
+        paths_mp4 = partition(paths_mp4, args.part, key=mp4_clip_id)
         if len(paths_mp4) == 0: return
+        intr_dir = os.path.normpath(args.input_dir) + '_intr'
         output_dir = os.path.normpath(args.input_dir) + '_contact'
         os.makedirs(output_dir, exist_ok=True)
     else:
         assert os.path.isfile(args.input_dir)
         assert args.input_dir.lower().endswith('.mp4')
         paths_mp4 = [args.input_dir]
+        intr_dir = os.path.join(os.path.dirname(args.input_dir), 'intr')
         output_dir = os.path.join(os.path.dirname(args.input_dir), 'contact')
         os.makedirs(output_dir, exist_ok=True)
 
@@ -168,8 +171,11 @@ def main():
     stds, means = stds.cuda(), means.cuda()
 
     with torch.inference_mode():
-        for path_mp4 in tqdm(paths_mp4, desc="clips", unit="clip", position=1, leave=True, dynamic_ncols=True):
+        for path_mp4 in tqdm(paths_mp4, desc="clips", unit="clip", position=1, leave=True, dynamic_ncols=True,
+                             disable=args.no_tqdm):
             clip_id = os.path.basename(path_mp4)[:-4]
+            # shards left by an unfinished run of this clip would be read together with this run's
+            remove_clip_shards(output_dir, clip_id)
 
             im_data  = torch.FloatTensor(1)
             im_info  = torch.FloatTensor(1)
@@ -184,10 +190,8 @@ def main():
             rows = []
 
             # read stage 1 intrinsics, and undistort frames if the MEI model warrants it
-            path_intr = os.path.join(os.path.dirname(path_mp4)+'_intr', os.path.basename(path_mp4)[:-4]+'.json')
-            if not os.path.exists(path_intr):
-                path_intr = os.path.join(os.path.dirname(path_mp4), 'intr', os.path.basename(path_mp4)[:-4]+'.json')
-            assert os.path.exists(path_intr)
+            path_intr = os.path.join(intr_dir, clip_id+'.json')
+            assert os.path.exists(path_intr), f"{path_intr} not found. Run stage 1 with the same --input_dir first."
             with open(path_intr, 'r') as f: data = json.load(f)
             if not data:
                 mark_done(output_dir, clip_id)
@@ -199,13 +203,15 @@ def main():
             if need_undist is None:
                 mark_done(output_dir, clip_id)
                 continue
+            pinhole = intr[:4]
             if need_undist:
-                try: map1, map2, _, _ = build_undistort_maps(frame_shape, intr, auto=True)
+                try: map1, map2, _, pinhole = build_undistort_maps(frame_shape, intr, auto=True)
                 except Exception:
                     mark_done(output_dir, clip_id)
                     continue
-            # raw intrinsics carried forward per row (clip-level constant)
+            # raw camera model and the undistorted frames' pinhole, carried forward per row
             fx_f, fy_f, cx_f, cy_f, xi_f = (float(v) for v in intr)
+            pfx, pfy, pcx, pcy = (float(v) for v in pinhole[:4])
 
             with av.open(path_mp4, "r") as reader:
                 total = (s:=reader.streams.video[0]).frames or (int(float(s.duration * s.time_base) * 30 + 0.5) if s.duration and s.time_base else None) # assume 30 fps video
@@ -268,12 +274,16 @@ def main():
 
                     hands = []
                     for h in hand_dets.astype(np.float32, copy=False):
+                        # drop a box with a non-finite corner or no extent (clamped onto an image edge).
+                        # Stage 4's crop needs a real box.
+                        if not (np.isfinite(h[:4]).all() and h[2] > h[0] and h[3] > h[1]): continue
                         hands.append({
                             "box":   [float(h[0]), float(h[1]), float(h[2]), float(h[3])],
                             "conf":  float(h[4]),
                             "side":  int(h[5]),
                             "side_conf": float(h[6]),
                         })
+                    if not hands: continue
 
                     row = {
                         "clip_id": clip_id,
@@ -283,6 +293,8 @@ def main():
                         "intr_model": data['model'],
                         "hands":   hands,
                         "fx": fx_f, "fy": fy_f, "cx": cx_f, "cy": cy_f, "xi": xi_f,
+                        "pinhole_fx": pfx, "pinhole_fy": pfy,
+                        "pinhole_cx": pcx, "pinhole_cy": pcy,
                     }
                     rows.append(row)
                     if len(rows) == args.chunk_size:

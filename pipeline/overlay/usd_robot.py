@@ -45,7 +45,7 @@ def usd_robot_config(robot_cfg, usd_joint_order: List[str]) -> UsdRobotConfig:
             multiplier=spec.get("multiplier", 1.0),
             offset=spec.get("offset", 0.0),
         )
-        for name, spec in overlay.get("mimic_joints", {}).items()
+        for name, spec in (overlay.get("mimic_joints") or {}).items()
     }
     return UsdRobotConfig(
         name=robot_cfg.name,
