@@ -1,8 +1,8 @@
 # Third-party notices
 
 HuRo's pipeline runs on the off-the-shelf components below, and the last column says what this
-repository redistributes of each. The rest comes from upstream. Each patch in
-`submodules_patches/` is a diff against one of them, with that project's licence in its header.
+repository redistributes of each. Each patch in `submodules_patches/` is a diff against one of
+them, with that project's licence in its header.
 
 ## Components
 

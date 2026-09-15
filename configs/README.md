@@ -100,7 +100,8 @@ overlay:
 
 - **`mimic_joints`** (optional) — copy it from the URDF's `<mimic>` tags.
 - **`hide_link_names`** — every link outside the arms and the hands, since the overlay shows only
-  those. Each name hides only that link's own geometry, not the links below it.
+  those. Each name hides only that link's own geometry, not the links below it. A torso link left
+  out of the list can block the whole camera view.
 
 ## 5. Checking the config
 
@@ -111,8 +112,8 @@ is built. For Allex it prints:
 ![check_frames.py output for Allex](../docs/check_frames_allex.png)
 
 Then set `ROBOT="myrobot"` and `LAST_STAGE=9` in `run_pipeline.sh`, run it on the example clips,
-and watch the videos in `examples/clips_chunked/myrobot/overlay/video/`. A missing robot part
-means an unresolved mesh (§1).
+and check that the videos in `examples/clips_chunked/myrobot/overlay/video/`
+show the arms and hands.
 
 ## 6. The LeRobot conversion
 

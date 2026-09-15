@@ -100,7 +100,7 @@ CUDA_VISIBLE_DEVICES=<gpu> python pipeline/stage<N>_<phase>_<name>.py \
     --input_dir <clip-dir> --part <a>/<b> --no_tqdm
 
 CUDA_VISIBLE_DEVICES=0 python pipeline/stage1_annot_intrinsics.py \
-    --input_dir examples/clips --part 1/1 --no_tqdm
+    --input_dir examples/clips --part 2/4 --no_tqdm
 ```
 
 Every stage accepts those three flags. The retargeting, overlay and LeRobot conversion stages

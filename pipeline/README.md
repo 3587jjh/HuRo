@@ -35,7 +35,7 @@ annotated clips can be retargeted to another robot without repeating stages 1 to
 
 | # | Script | Backend | Output |
 |---|--------|---------|--------|
-| 1 | `stage1_annot_intrinsics.py` | DroidCalib, AnyCalib fallback | per-clip camera intrinsics JSON (`fx, fy, cx, cy, xi, H, W, model`) |
+| 1 | `stage1_annot_intrinsics.py` | DroidCalib, AnyCalib fallback | per-clip JSON of `fx, fy, cx, cy, xi, H, W, model` |
 | 2 | `stage2_annot_contact.py` | 100DoH Faster R-CNN, hand class only | per-frame hand boxes and sides, and the first Parquet table |
 | 3 | `stage3_annot_contact_refine.py` | BoT-SORT tracking | the same hands, with the sides made consistent along each track |
 | 4 | `stage4_annot_hand.py` | HAWOR | per-frame 3D hand keypoints, MANO rotations and hand masks |

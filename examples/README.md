@@ -46,10 +46,10 @@ defines. Annotations from stage 2 on are made on the undistorted frames.
 | `pinhole_*` | float64, `fx`, `fy`, `cx`, `cy` of the undistorted frames | 2 |
 | `hands` | list of the per-hand struct below | 2 |
 | `cam_pose` | 4x4 cam-to-world, OpenCV, metric-scaled and gravity-aligned | 5 |
-| `arm_mask` | bit-packed (H,W) bool | 7 |
 | `n_person_det` | int32, the number of people detected, only on sampled frames | 6 |
 | `narr` | struct of `think`, `left`, `right`, `bimanual` | 6 |
 | `language` | string, `narr` merged to one instruction | 6 |
+| `arm_mask` | bit-packed (H,W) bool | 7 |
 | `cam_pose_base` | 4x4 cam-to-robot-base, OpenCV | 8 |
 | `state_qpos` | float32, the robot's joint angles, ordered by `state_qpos_joint_names` below | 8 |
 | `state_eef_left`, `state_eef_right` | float32, wrist position (3) + first two rows of its rotation matrix (6) + hand joint angles | 8 |
