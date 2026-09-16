@@ -118,8 +118,8 @@ _VULKAN_ICD_DIRS = (
 )
 
 
-# Isaac Sim 5.1's RTX renderer segfaults in librtx.scenedb.plugin.so on the R590/595 driver
-# branch. NVIDIA validates 5.1 against 580.65.06. See isaac-sim/IsaacSim#537 and #648.
+# Isaac Sim 5.1's RTX renderer segfaults in librtx.scenedb.plugin.so on a driver branch newer
+# than R580. NVIDIA tested Isaac Sim 5.1 on 580.65.06.
 _ISAAC_BAD_DRIVER_MIN = 590
 
 
@@ -163,12 +163,11 @@ def _check_driver_supported():
         raise RuntimeError(
             f"Isaac Sim {isaac[0]}.{isaac[1]} does not work with NVIDIA driver "
             f"{driver[0]}.{driver[1]}.\n"
-            "Its RTX renderer crashes in librtx.scenedb.plugin.so during startup, a few seconds "
-            "after 'app ready', with no useful error (isaac-sim/IsaacSim#537, #648). The crash is "
-            "in the driver's user-mode libraries, so neither the conda nor the Docker environment "
-            "avoids it.\n"
-            "Use driver 580.x (NVIDIA validates Isaac Sim 5.1 against 580.65.06), or run this "
-            "stage on another host: stages 1-8 and 10 are unaffected.\n"
+            "Its RTX renderer crashes in librtx.scenedb.plugin.so during startup, shortly after "
+            "'app ready', with no useful error. The conda and docker installs carry the same "
+            "Isaac Sim binaries, so rebuilding the environment does not avoid it.\n"
+            "Use a driver no newer than R580 (NVIDIA tested Isaac Sim 5.1 on 580.65.06), or run "
+            "this stage on another host: stages 1-8 do not use Isaac Sim.\n"
             "Set HURO_SKIP_DRIVER_CHECK=1 to run anyway."
         )
 
