@@ -75,6 +75,23 @@ if [ "$FIRST_STAGE" -le 9 ] && [ "$LAST_STAGE" -ge 9 ] \
   exit 1
 fi
 
+# Stage 9's RTX renderer crashes on a driver branch newer than R580 (setup/README.md).
+# Checked here so a run that includes stage 9 fails now rather than after stages 1-8.
+if [ "$FIRST_STAGE" -le 9 ] && [ "$LAST_STAGE" -ge 9 ] && [ -z "$HURO_SKIP_DRIVER_CHECK" ]; then
+  DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
+  ISAAC=$(python -c "import importlib.metadata as m; print(m.version('isaacsim'))" 2>/dev/null)
+  DRIVER_MAJOR="${DRIVER%%.*}"
+  if [[ "$DRIVER_MAJOR" =~ ^[0-9]+$ ]] && [ "$DRIVER_MAJOR" -ge 590 ] \
+     && [ "${ISAAC%%.*}" = 5 ]; then
+    echo "stage 9 renders through Isaac Sim $ISAAC, which does not work with NVIDIA"
+    echo "driver $DRIVER. Its RTX renderer crashes during startup. Use a driver no newer"
+    echo "than R580, or set LAST_STAGE=8 and render the overlay on another host."
+    echo
+    echo "Set HURO_SKIP_DRIVER_CHECK=1 to run anyway."
+    exit 1
+  fi
+fi
+
 if [ "$PROGRESS" = 1 ]; then TQDM=(); else TQDM=(--no_tqdm); fi
 
 vulkan_icd_env() {

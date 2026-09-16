@@ -28,6 +28,13 @@ Any GeForce RTX or RTX-series professional GPU carries the cores, among them the
 A40 and RTX 6000 Ada. Without one, set `LAST_STAGE=8` in `run_pipeline.sh` and run the
 overlay on another machine.
 
+NVIDIA tested Isaac Sim 5.1 on driver 580.65.06, and a branch newer than R580 breaks the
+overlay. On 595 or 610 the RTX renderer crashes at startup and the stage exits with a
+segmentation fault.
+
+After changing the driver, delete `/tmp/huro_ov_cache_*` and rerun `./setup/setup.sh check`.
+The overlay caches its compiled shaders there, and they were built for the old driver.
+
 The overlay also requires `OMNI_KIT_ACCEPT_EULA=Y`. Setting that variable accepts NVIDIA's
 Omniverse licence, which the install puts at `site-packages/isaacsim/LICENSE.txt`. Nothing in this
 repository sets it, and the overlay does not run without it. Read the licence, then set it in the

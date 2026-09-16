@@ -74,9 +74,9 @@ run writes and how to read them.
 ## 🔧 Setup
 
 The pipeline requires Linux, an NVIDIA GPU with at least 24 GB of VRAM and a driver supporting
-CUDA 12.8, and git. The robot overlay also requires a GPU with RT cores.
-[`setup/README.md`](setup/README.md) covers the installation and how to download the
-off-the-shelf models the pipeline uses.
+CUDA 12.8, and git. The robot overlay also requires a GPU with RT cores and a driver no newer
+than R580. [`setup/README.md`](setup/README.md) covers the installation and how to download
+the off-the-shelf models the pipeline uses.
 
 ## ⚡ Run
 
