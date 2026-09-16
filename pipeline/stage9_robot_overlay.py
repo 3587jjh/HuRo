@@ -16,6 +16,7 @@ import faulthandler
 import json
 import os
 import os.path as osp
+import re
 import signal
 import sys
 import tempfile
@@ -117,6 +118,61 @@ _VULKAN_ICD_DIRS = (
 )
 
 
+# Isaac Sim 5.1's RTX renderer segfaults in librtx.scenedb.plugin.so on the R590/595 driver
+# branch. NVIDIA validates 5.1 against 580.65.06. See isaac-sim/IsaacSim#537 and #648.
+_ISAAC_BAD_DRIVER_MIN = 590
+
+
+def _driver_version():
+    """The NVIDIA kernel driver version, or None if it cannot be read."""
+    try:
+        with open("/proc/driver/nvidia/version") as f:
+            m = re.search(r"Module for \S+\s+([0-9]+)\.([0-9]+)", f.read())
+        if m:
+            return int(m.group(1)), int(m.group(2))
+    except OSError:
+        pass
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+                             capture_output=True, text=True, timeout=20).stdout.strip().splitlines()
+        if out:
+            major, _, minor = out[0].partition(".")
+            return int(major), int(minor.split(".")[0] or 0)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def _isaac_version():
+    """The installed isaacsim version as a tuple, or None."""
+    try:
+        from importlib.metadata import version
+        return tuple(int(x) for x in version("isaacsim").split(".")[:2])
+    except Exception:
+        return None
+
+
+def _check_driver_supported():
+    """Fail fast on driver/Isaac Sim pairings whose only symptom is a segfault."""
+    if os.environ.get("HURO_SKIP_DRIVER_CHECK"):
+        return
+    driver, isaac = _driver_version(), _isaac_version()
+    if driver is None or isaac is None:
+        return
+    if isaac[0] == 5 and driver[0] >= _ISAAC_BAD_DRIVER_MIN:
+        raise RuntimeError(
+            f"Isaac Sim {isaac[0]}.{isaac[1]} does not work with NVIDIA driver "
+            f"{driver[0]}.{driver[1]}.\n"
+            "Its RTX renderer crashes in librtx.scenedb.plugin.so during startup, a few seconds "
+            "after 'app ready', with no useful error (isaac-sim/IsaacSim#537, #648). The crash is "
+            "in the driver's user-mode libraries, so neither the conda nor the Docker environment "
+            "avoids it.\n"
+            "Use driver 580.x (NVIDIA validates Isaac Sim 5.1 against 580.65.06), or run this "
+            "stage on another host: stages 1-8 and 10 are unaffected.\n"
+            "Set HURO_SKIP_DRIVER_CHECK=1 to run anyway."
+        )
+
+
 def _check_gpu_rendering():
     """Check Vulkan GPU rendering. Clear breakage is fatal. Other problems warn."""
     errors, warnings_ = [], []
@@ -186,6 +242,7 @@ def _check_gpu_rendering():
         )
 
 
+_check_driver_supported()
 _check_gpu_rendering()
 
 import warnings
