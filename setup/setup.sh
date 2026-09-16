@@ -75,8 +75,9 @@ pip_stack() {
   # Isaac Sim 5.1.0 (stage 9): several GB of kit + extension-cache wheels
   pip install "isaacsim[all,extscache]==5.1.0" --extra-index-url https://pypi.nvidia.com
 
-  # JAX CUDA build (stage 8). Its nvidia-* floors are all >=, satisfied by torch's cu128 pin set
-  pip install "jax[cuda12]==0.4.30"
+  # JAX CUDA build (stage 8). Blackwell (sm_120) needs 0.6.0 or newer, and 0.6.x requires
+  # cudnn >= 9.8, which replaces the nvidia-cudnn-cu12 build that torch pins.
+  pip install "jax[cuda12]==0.6.2"
 
   # stage-6 narration stack (Qwen3.5 support is only in a transformers dev commit)
   pip install "transformers @ git+https://github.com/huggingface/transformers.git@a91232af09f59e2e1c96561901c92e01e238c355"
@@ -102,7 +103,7 @@ pip_stack() {
   ( cd submodules/anycalib && pip install . --no-build-isolation )
 
   # stage-8 IK stack: pyroki/jaxls dependencies first, then the two --no-deps.
-  # jaxls@50a58be declares jax>=0.6.0 but runs on 0.4.30. --no-deps keeps jax at 0.4.30.
+  # jaxls@50a58be declares jax>=0.6.0, which the pin above satisfies.
   pip install "jax-dataclasses>=1.6.2" "jaxlie>=1.0.0" jaxtyping termcolor "typing-extensions>=4.5" \
     tyro robot_descriptions yourdfpy trimesh pyliblzfse
   pip install --no-deps "jaxls @ git+https://github.com/brentyi/jaxls.git@50a58be88c5ef74532f09e3f55268b4f02c490e3"
