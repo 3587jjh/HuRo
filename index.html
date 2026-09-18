@@ -66,7 +66,7 @@
     <div class="tldr-box">
       <span class="tldr-tag">TL;DR</span>
       <p>
-        Can we <b>scale VLA pretraining</b> with human videos converted into robot observations and actions?
+        Can human videos converted into robot-aligned observations and actions serve as a <b>scalable source for VLA pretraining</b>?
         We build a robotization pipeline that turns heterogeneous egocentric human videos into
         robot-aligned observations and retargeted actions, and use it to construct the <b><span class="huro">HuRo</span> dataset</b>:
         630K robotized episodes and 142M frames. Scaling this data improves real-world performance under both
@@ -112,7 +112,7 @@
       <div class="mot-card problem">
         <h4>Prior robotized-video pretraining</h4>
         <ul>
-          <li>Jointly robotized data from target-task demonstrations</li>
+          <li>Jointly robotized data from task-specific demonstrations</li>
           <li>Aligns observations or actions, not both at scale</li>
           <li>Uses robotized videos for visual pretraining with auxiliary objectives</li>
           <li>Limited-scale pretraining data</li>
@@ -209,7 +209,7 @@
     <div class="result">
       <div class="n">1</div>
       <div>
-        <h4>Robotized pretraining scales real-robot performance</h4>
+        <h4>Scaling robotized human-video pretraining improves real-robot performance</h4>
         <p>Downstream completion rises consistently with pretraining scale under both ID and OOD.
           At full scale, <span class="huro">HuRo</span> pretraining also outperforms the
           &pi;<sub>0.5</sub> and GR00T N1.6 reference models under both ID and OOD.</p>
@@ -379,7 +379,7 @@
           <div class="exp-panel-inner">
             <p class="exp-take">
               A mixed-source 50% subset uses <b>fewer frames</b> than the full EgoDex-only subset yet covers far more
-              verbs, objects, and verb-object pairs, and reaches <b>higher ID and OOD completion</b> on the four ALLEX tasks.
+              verbs, objects, and verb-object pairs. On the four ALLEX tasks, it reaches <b>higher ID and OOD completion</b>.
             </p>
             <div class="exp-body two-tables">
               <div>
