@@ -66,7 +66,7 @@
     <div class="tldr-box">
       <span class="tldr-tag">TL;DR</span>
       <p>
-        Can human videos converted into robot-aligned observations and actions serve as a <b>scalable source for VLA pretraining</b>?
+        Can heterogeneous human videos be transformed into a <b>scalable source of robot-aligned supervision</b>?
         We build a robotization pipeline that turns heterogeneous egocentric human videos into
         robot-aligned observations and retargeted actions, and use it to construct the <b><span class="huro">HuRo</span> dataset</b>:
         630K robotized episodes and 142M frames. Scaling this data improves real-world performance under both
@@ -78,8 +78,8 @@
       <img src="./static/images/teaser.png" alt="HuRo overview" />
     </div>
     <p class="caption">
-      <b>Overview.</b> Large-scale human videos are transformed into VLA episodes with robotized observations,
-      language instructions, robot states, and actions. VLA policies pretrained on larger <span class="huro">HuRo</span> subsets achieve higher
+      <b>Overview.</b> Large-scale human videos are transformed into robotized episodes with robot-aligned observations,
+      language instructions, states, and actions. VLA policies pretrained on larger <span class="huro">HuRo</span> subsets achieve higher
       real-world manipulation performance after downstream finetuning.
     </p>
 
@@ -90,7 +90,7 @@
       <div class="stat"><div class="num">1,317h</div><div class="lbl">Video at 30 fps</div></div>
       <div class="stat"><div class="num">5</div><div class="lbl">Human-video sources</div></div>
     </div>
-    <div class="stat-label">Real-world impact (0% to 100% pretraining)</div>
+    <div class="stat-label">Real-world impact across HuRo data scales</div>
     <div class="stats three">
       <div class="stat gain"><div class="num">51.5 &rarr; 80.3</div><div class="lbl">Overall completion (%)</div></div>
       <div class="stat gain"><div class="num">68.1 &rarr; 88.4</div><div class="lbl">In-distribution (%)</div></div>
@@ -105,8 +105,8 @@
   <div class="wrap">
     <h2 class="section-title">Comparison with Prior Work</h2>
     <p class="section-sub">
-      <span class="huro">HuRo</span> scales <span class="mark">jointly robot-aligned observation-action</span> data from
-      diverse human videos for end-to-end VLA pretraining.
+      <span class="huro">HuRo</span> turns diverse human videos into a scalable source of<br />
+      <span class="mark">jointly robot-aligned observation-action</span> data.
     </p>
     <div class="mot-grid">
       <div class="mot-card problem">
@@ -115,7 +115,7 @@
           <li>Jointly robotized data from task-specific demonstrations</li>
           <li>Aligns observations or actions, not both at scale</li>
           <li>Uses robotized videos for visual pretraining with auxiliary objectives</li>
-          <li>Limited-scale pretraining data</li>
+          <li>Limited-scale robotized data</li>
         </ul>
       </div>
       <div class="mot-card solution">
@@ -209,9 +209,9 @@
     <div class="result">
       <div class="n">1</div>
       <div>
-        <h4>Scaling robotized human-video pretraining improves real-robot performance</h4>
-        <p>Downstream completion rises consistently with pretraining scale under both ID and OOD.
-          At full scale, <span class="huro">HuRo</span> pretraining also outperforms the
+        <h4>Scaling robotized human-video data improves real-robot performance</h4>
+        <p>Downstream completion rises consistently as the amount of <span class="huro">HuRo</span> data increases,
+          under both ID and OOD. The model pretrained on the full dataset also outperforms the
           &pi;<sub>0.5</sub> and GR00T N1.6 reference models under both ID and OOD.</p>
       </div>
     </div>
@@ -219,7 +219,7 @@
       <div class="n">2</div>
       <div>
         <h4>Visual robotization improves OOD robustness</h4>
-        <p>With the same source clips and the same retargeted action supervision,
+        <p>With the same source clips and retargeted action supervision,
           a <b>10% overlay</b> subset outperforms the <b>100% no-overlay</b> variant on OOD (<b>59.5% vs. 55.7%</b>).</p>
       </div>
     </div>
@@ -257,15 +257,15 @@
     <div class="result" style="margin-top:.4rem;">
       <div class="n">3</div>
       <div>
-        <h4>End-to-end pretraining outperforms visual-only transfer</h4>
-        <p>Pretraining observations <i>and</i> retargeted actions end-to-end substantially outperforms
+        <h4>Retargeted action supervision outperforms visual-only transfer</h4>
+        <p>End-to-end pretraining with retargeted actions substantially outperforms
           <b>PT (Visual Only)</b>, which keeps the pretrained visual pathway but reinitializes the action head.
           <b>PT (Visual + Action)</b> reaches <b>61.1% ID / 50.0% OOD</b> and produces demonstration-consistent grasps
           where <b>No PT</b> and <b>PT (Visual Only)</b> grasp imprecisely.</p>
       </div>
     </div>
     <div class="fig-card" style="margin-top:1.2rem;">
-      <img src="./static/images/end2end.png" alt="Effect of end-to-end VLA pretraining" />
+      <img src="./static/images/end2end.png" alt="Effect of retargeted action supervision" />
     </div>
   </div>
 </section>
@@ -278,18 +278,18 @@
 
     <div class="exp-grid">
 
-      <!-- 1. Comparison with video-generation pretraining -->
+      <!-- 1. Comparison with video-generated data -->
       <div class="exp-card" id="exp1">
         <button class="exp-toggle" type="button" onclick="expToggle(this)" aria-expanded="false" aria-controls="exp1-body">
           <span class="exp-thumb"><img src="./static/images/scaling_source.png" alt="" /></span>
-          <span class="exp-label"><span class="idx">01</span><span class="ttl">Comparison with video-generation pretraining</span></span>
+          <span class="exp-label"><span class="idx">01</span><span class="ttl">Comparison with video-generated data</span></span>
           <span class="exp-chev"><i class="fa-solid fa-chevron-down"></i></span>
         </button>
         <div class="exp-panel" id="exp1-body" hidden>
           <div class="exp-panel-inner">
             <div class="exp-body">
               <div class="exp-media">
-                <img src="./static/images/scaling_source.png" alt="Scaling comparison with video-generation pretraining" />
+                <img src="./static/images/scaling_source.png" alt="Comparison with video-generated data" />
               </div>
               <div class="exp-text">
                 <p><span class="huro">HuRo</span> with only <b>0.7M</b> frames already outperforms a DreamGen-based image-to-video + inverse-dynamics baseline (I2V + IDM) at <b>7.0M</b> frames.</p>
@@ -335,11 +335,11 @@
         </div>
       </div>
 
-      <!-- 3. Robotized vs. human-domain pretraining -->
+      <!-- 3. Robotized vs. human-domain data -->
       <div class="exp-card" id="exp3">
         <button class="exp-toggle" type="button" onclick="expToggle(this)" aria-expanded="false" aria-controls="exp3-body">
           <span class="exp-thumb fit"><img src="./static/images/thumbs/card3.png" alt="" /></span>
-          <span class="exp-label"><span class="idx">03</span><span class="ttl">Robotized vs. human-domain pretraining</span></span>
+          <span class="exp-label"><span class="idx">03</span><span class="ttl">Robotized vs. human data</span></span>
           <span class="exp-chev"><i class="fa-solid fa-chevron-down"></i></span>
         </button>
         <div class="exp-panel" id="exp3-body" hidden>
@@ -361,18 +361,18 @@
                     </tbody>
                   </table>
                 </div></div>
-                <p class="exp-note">OOD completion (%) in a separate environment with an unseen background. Human-domain variants use the same clips and pretraining scale as ours.</p>
+                <p class="exp-note">OOD completion (%) in a separate environment with an unseen background. Human-domain variants use the same clips and data scale as ours.</p>
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- 4. Mixed-source vs. single-source pretraining -->
+      <!-- 4. Mixed-source vs. single-source HuRo data -->
       <div class="exp-card" id="exp4">
         <button class="exp-toggle" type="button" onclick="expToggle(this)" aria-expanded="false" aria-controls="exp4-body">
           <span class="exp-thumb fit"><img src="./static/images/thumbs/card4.png" alt="" /></span>
-          <span class="exp-label"><span class="idx">04</span><span class="ttl">Mixed-source vs. single-source pretraining</span></span>
+          <span class="exp-label"><span class="idx">04</span><span class="ttl">Mixed-source vs. single-source HuRo data</span></span>
           <span class="exp-chev"><i class="fa-solid fa-chevron-down"></i></span>
         </button>
         <div class="exp-panel" id="exp4-body" hidden>
@@ -423,7 +423,7 @@
         <div class="exp-panel" id="exp5-body" hidden>
           <div class="exp-panel-inner">
             <p class="exp-take">
-              ALLEX-targeted <span class="huro">HuRo</span> pretraining transfers to <i class="nb">OpenArm Fruit Pick-and-Place</i>,
+              Pretraining on ALLEX-targeted <span class="huro">HuRo</span> data transfers to <i class="nb">OpenArm Fruit Pick-and-Place</i>,
               with the <b>best OOD and overall completion</b> among the compared variants.
             </p>
             <div class="exp-body">
