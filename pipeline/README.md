@@ -1,6 +1,6 @@
 # Robotization Pipeline
 
-The pipeline converts egocentric human videos into robotized episodes for VLA pretraining. It
+The pipeline converts egocentric human videos into robotized episodes. It
 retargets the human hand motion into the target robot's joint trajectory, and it removes the
 human arms from the frames and renders that robot in their place. Both conversions require
 annotations that raw video does not carry, so the pipeline estimates them from the frames first.

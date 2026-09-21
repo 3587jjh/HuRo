@@ -9,19 +9,20 @@
     <a href='#-license'><img src='https://img.shields.io/badge/License-Apache--2.0-orange' alt='License'></a>
 </p>
 
-<p align="center"><img src="docs/teaser.png" width="100%" alt="Overview of HuRo pretraining for real-world manipulation"></p>
+<p align="center"><img src="docs/teaser.png" width="100%" alt="Overview of HuRo for real-world manipulation"></p>
 
 <div align="justify">
 
-**HuRo** converts egocentric human video into robot-aligned observations and action trajectories
-for vision-language-action (VLA) pretraining. The pipeline retargets the human hand motion into
-robot joint trajectories, and it removes the human arms from the frames and renders the robot in
-their place. Intermediate signals a source does not provide are estimated, so videos at different
-annotation levels are converted into a common format. Using this pipeline we construct the **HuRo
-dataset**, comprising about **630K robotized episodes** and **142M processed frames** from five
-human-video sources. Across four real-world manipulation tasks, increasing the robotized
-pretraining scale improves overall completion after finetuning from **51.5% to 80.3%** and
-out-of-distribution completion under spatial and visual shifts from **34.9% to 72.2%**.
+**HuRo** converts egocentric human video into robot-aligned observations and action trajectories.
+The pipeline retargets the human hand motion into robot joint trajectories, and it removes the
+human arms from the frames and renders the robot in their place. Intermediate signals a source
+does not provide are estimated, so videos at different annotation levels are converted into a
+common format. Using this pipeline we construct the **HuRo dataset**, comprising about **630K
+robotized episodes** and **142M processed frames** from five human-video sources. Across four
+real-world manipulation tasks, pretraining a vision-language-action (VLA) policy on increasing
+amounts of robotized human-video data improves overall completion after finetuning from **51.5% to
+80.3%** and out-of-distribution completion under spatial and visual shifts from **34.9% to
+72.2%**.
 
 </div>
 
@@ -61,7 +62,7 @@ out-of-distribution completion under spatial and visual shifts from **34.9% to 7
 ![raw egocentric video, the arms removed, and the robot rendered in their place](docs/pipeline_example.jpg)
 
 HuRo's robotization pipeline converts **raw, untrimmed egocentric video** of everyday activity
-into robotized episodes for VLA pretraining. It first estimates the camera and hand annotations,
+into robotized episodes. It first estimates the camera and hand annotations,
 identifies the manipulation segments within the untrimmed clip, and assigns a language instruction
 to each. Then **action conversion** retargets the human hand motion into the target robot's joint
 trajectory, and **visual conversion** removes the visible human embodiment and renders that robot
