@@ -1,0 +1,55 @@
+# Stage 9 (Isaac Sim robot overlay) on Isaac Sim 6.0, for hosts whose NVIDIA driver is newer
+# than R580. Isaac Sim 5.1's RTX plugin segfaults at startup on those (isaac-sim/IsaacSim#537,
+# #648), which stage 9 detects and reports; Isaac Sim 6.0 has no such limit. Only stage 9 runs
+# here — stages 1-8 and 10 stay in the main `huro` image (setup/Dockerfile).
+# Neither code nor weights are baked in: mount the checkout's parent at /workspace, exactly
+# like setup/docker_run.sh.
+#
+#   docker build -f setup/Dockerfile.isaac6 -t huro-isaac6 .     # the context is not used
+#
+#   docker run --rm --gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 \
+#     --device /dev/dri \
+#     -v /usr/share/nvidia/nvoptix.bin:/usr/share/nvidia/nvoptix.bin:ro \
+#     -v /usr/share/vulkan/implicit_layer.d:/usr/share/vulkan/implicit_layer.d:ro \
+#     -e NVIDIA_DRIVER_CAPABILITIES=all \
+#     -e ACCEPT_EULA=Y -e OMNI_KIT_ACCEPT_EULA=Y -e CUDA_VISIBLE_DEVICES=0 \
+#     -v "$HOME:/workspace" -w /workspace/HuRo \
+#     huro-isaac6 bash -c '
+#       export HOME=/tmp/huro_ov_cache_$(id -un)_gpu$CUDA_VISIBLE_DEVICES; mkdir -p "$HOME"
+#       export __GL_SHADER_DISK_CACHE=1 __GL_SHADER_DISK_CACHE_PATH=$HOME/nvgl CUDA_CACHE_PATH=$HOME/cuda
+#       python pipeline/stage9_robot_overlay.py --robot_name allex \
+#           --input_dir /workspace/path/to/clips --part 1/1 --no_tqdm'
+#
+# EULA: ACCEPT_EULA=Y is the NGC container's own gate; OMNI_KIT_ACCEPT_EULA=Y is what stage 9
+# and run_pipeline.sh check. Neither is set here: accepting NVIDIA's licence is the user's call.
+# Vulkan: mount nothing at /usr/share/vulkan/icd.d. The image carries its own NVIDIA ICD at
+# /etc/vulkan/icd.d/nvidia_icd.json and names it in VK_DRIVER_FILES, which stage 9's preflight
+# and run_pipeline.sh's vulkan_icd_env both honour.
+# Caches: with --rm every start recompiles RTX shaders (~75 s before the first frame). For
+# repeated runs keep the container, or mount /tmp/huro_ov_cache_<user>_gpu<n> from the host.
+FROM nvcr.io/nvidia/isaac-sim:6.0.1
+
+# Stage-9 python deps that Isaac's bundled interpreter (3.12) lacks. numpy, scipy, opencv and
+# pyyaml already ship with it; PyAV brings its own ffmpeg.
+RUN /isaac-sim/python.sh -m pip install --no-cache-dir "tqdm>=4.66" "av>=13" "pyarrow>=17"
+
+# The base image runs as the unprivileged `isaac-sim` user and /isaac-sim is 0750 owned by it,
+# so no other uid can read the interpreter. Stage 9 runs as root instead, like the main `huro`
+# image. Kit accepts root: SimulationApp passes --allow-root itself.
+USER root
+
+# `python` = Isaac's interpreter with its environment, so the stage scripts run unchanged.
+# Unlike /isaac-sim/python.sh this execs, so exit codes (stage 9's hang code 86) reach the caller.
+RUN printf '%s\n' '#!/bin/bash' \
+      'export CARB_APP_PATH=/isaac-sim/kit ISAAC_PATH=/isaac-sim EXP_PATH=/isaac-sim/apps' \
+      'source /isaac-sim/setup_python_env.sh' \
+      'export RESOURCE_NAME=IsaacSim' \
+      'export LD_PRELOAD=/isaac-sim/kit/libcarb.so${LD_PRELOAD:+:$LD_PRELOAD}' \
+      'exec /isaac-sim/kit/python/bin/python3 "$@"' \
+      > /usr/local/bin/python && chmod +x /usr/local/bin/python && \
+    ln -s /usr/local/bin/python /usr/local/bin/python3
+
+# The base image's entrypoint launches the streaming app; this one is a batch worker.
+ENTRYPOINT []
+WORKDIR /workspace/HuRo
+CMD ["/bin/bash"]
