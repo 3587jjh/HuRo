@@ -70,11 +70,8 @@ class IsaacSimRobotRenderer:
 
             self._import_isaac_modules()
 
-            from omni.isaac.core import World
-            from omni.isaac.core.utils.stage import get_current_stage
-
-            self.world = World(stage_units_in_meters=1.0)
-            self.stage = get_current_stage()
+            self.world = self._World(stage_units_in_meters=1.0)
+            self.stage = self._get_current_stage()
 
             self._setup_scene()
 
@@ -124,12 +121,22 @@ class IsaacSimRobotRenderer:
     def _import_isaac_modules(self):
         """Import Isaac Sim modules after SimulationApp is initialized."""
         import omni.replicator.core as rep
-        from omni.isaac.core.utils.stage import add_reference_to_stage
-        from omni.isaac.core.articulations import Articulation
         from pxr import Gf, UsdGeom, UsdLux, Sdf
         from isaacsim.core.utils.render_product import set_resolution
+        # The omni.isaac.core names were deprecated in Isaac Sim 4.5 and removed in 6.0. The
+        # isaacsim.core.* ones are the same objects on 4.5-5.1, so try them first.
+        try:
+            from isaacsim.core.api import World
+            from isaacsim.core.prims import SingleArticulation as Articulation
+            from isaacsim.core.utils.stage import add_reference_to_stage, get_current_stage
+        except ImportError:
+            from omni.isaac.core import World
+            from omni.isaac.core.articulations import Articulation
+            from omni.isaac.core.utils.stage import add_reference_to_stage, get_current_stage
 
         self._rep = rep
+        self._World = World
+        self._get_current_stage = get_current_stage
         self._set_render_product_resolution = set_resolution
         self._Gf = Gf
         self._UsdGeom = UsdGeom

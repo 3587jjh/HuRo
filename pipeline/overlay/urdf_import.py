@@ -12,11 +12,10 @@ def _stage_for_import(urdf_path: Path, staging_dir: Path) -> Path:
     """The URDF to hand the importer, with mesh URIs resolvable. Unresolved ones make it
     silently yield a robot with no visual geometry. A URDF using package:// is copied next to
     <pkg> symlinks, and one using paths relative to itself is imported where it lies."""
-    pkgs = sorted(set(re.findall(r"package://([^/]+)/", urdf_path.read_text())))
+    pkgs, pkg_root = _package_root(urdf_path)
     if not pkgs:
         return urdf_path
 
-    pkg_root = urdf_path.parent.parent
     staging_dir.mkdir(parents=True, exist_ok=True)
     staged = staging_dir / urdf_path.name
     shutil.copy2(urdf_path, staged)
@@ -26,6 +25,41 @@ def _stage_for_import(urdf_path: Path, staging_dir: Path) -> Path:
             link.unlink()
         link.symlink_to(pkg_root)
     return staged
+
+
+def _package_root(urdf_path: Path):
+    """(package names, root) for a URDF's package:// mesh URIs, or ([], None)."""
+    pkgs = sorted(set(re.findall(r"package://([^/]+)/", urdf_path.read_text())))
+    return pkgs, (urdf_path.parent.parent if pkgs else None)
+
+
+def _ensure_overlay_usd_v6(urdf_path: Path, usd_path: Path, URDFImporter, URDFImporterConfig) -> str:
+    """Isaac Sim >= 6.0: the importer is a different tool (urdf-usd-converter) that writes a
+    USD package <dir>/<robot>/<robot>.usda, not a single file. It is cached beside the 5.x
+    file: build/overlay/<robot>.usd -> build/overlay/<robot>_isaac6/<URDF stem>/<stem>.usda."""
+    out_dir = usd_path.with_name(usd_path.stem + "_isaac6")
+    cached = next(iter(sorted(out_dir.glob("*/*.usda"))), None)
+    if cached is not None and cached.stat().st_mtime >= urdf_path.stat().st_mtime:
+        return str(cached)
+
+    # The importer appends _1, _2, ... instead of overwriting an existing output directory.
+    shutil.rmtree(out_dir, ignore_errors=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pkgs, pkg_root = _package_root(urdf_path)
+    cfg = URDFImporterConfig(
+        urdf_path=str(urdf_path),
+        usd_path=str(out_dir),
+        merge_fixed_joints=False,   # keep every link: the config hides some of them by name
+        fix_base=True,              # the robot is posed by the pipeline, not by physics
+        allow_self_collision=False,
+        # package://<pkg>/... resolves to the URDF's parent directory (same as _stage_for_import)
+        ros_package_paths=[{"name": pkg, "path": str(pkg_root)} for pkg in pkgs],
+    )
+    final = Path(URDFImporter(cfg).import_urdf())
+    if not final.is_file():
+        raise RuntimeError(f"URDF import produced no USD at {final} (from {urdf_path})")
+    os.utime(final, None)
+    return str(final)
 
 
 def ensure_overlay_usd(urdf_path, usd_path) -> str:
@@ -46,6 +80,12 @@ def _import_if_stale(urdf_path, usd_path) -> str:
 
     from isaacsim.core.utils.extensions import enable_extension
     enable_extension("isaacsim.asset.importer.urdf")
+    try:
+        from isaacsim.asset.importer.urdf import URDFImporter, URDFImporterConfig
+    except ImportError:            # Isaac Sim <= 5.1: the C++ importer behind _urdf
+        URDFImporter = None
+    if URDFImporter is not None:   # Isaac Sim >= 6.0: _urdf and its ImportConfig are gone
+        return _ensure_overlay_usd_v6(urdf_path, usd_path, URDFImporter, URDFImporterConfig)
     from isaacsim.asset.importer.urdf import _urdf
 
     cfg = _urdf.ImportConfig()

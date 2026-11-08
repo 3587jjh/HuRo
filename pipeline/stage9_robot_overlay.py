@@ -166,8 +166,10 @@ def _check_driver_supported():
             "Its RTX renderer crashes in librtx.scenedb.plugin.so during startup, shortly after "
             "'app ready', with no useful error. The conda and docker installs carry the same "
             "Isaac Sim binaries, so rebuilding the environment does not avoid it.\n"
-            "Use a driver no newer than R580 (NVIDIA tested Isaac Sim 5.1 on 580.65.06), or run "
-            "this stage on another host: stages 1-8 do not use Isaac Sim.\n"
+            "Install Isaac Sim 6.0 or newer, which this stage also supports and which has no "
+            "such driver limit (setup/Dockerfile.isaac6), or use a driver no newer than R580 "
+            "(NVIDIA tested Isaac Sim 5.1 on 580.65.06), or run this stage on another host: "
+            "stages 1-8 do not use Isaac Sim.\n"
             "Set HURO_SKIP_DRIVER_CHECK=1 to run anyway."
         )
 
