@@ -5,7 +5,7 @@
 <p align="center">
     <a href='https://arxiv.org/abs/2609.10706'><img src='https://img.shields.io/badge/arXiv-2609.10706-b31b1b?logo=arxiv&logoColor=white' alt='arXiv'></a>
     <a href='https://3587jjh.github.io/HuRo/'><img src='https://img.shields.io/badge/Project_Page-Website-green?logo=googlechrome&logoColor=white' alt='Project Page'></a>
-    <img src='https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Data_coming_soon-lightgrey' alt='Dataset'>
+    <a href='https://huggingface.co/collections/Joocjun/huro'><img src='https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Dataset-yellow' alt='Dataset'></a>
     <a href='#-license'><img src='https://img.shields.io/badge/License-Apache--2.0-orange' alt='License'></a>
 </p>
 
